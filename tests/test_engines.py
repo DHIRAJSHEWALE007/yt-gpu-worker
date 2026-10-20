@@ -115,3 +115,33 @@ def test_safe_vae_tiling_and_slicing_fallbacks() -> None:
     pm_cpu = PipeMock()
     safe_apply_gpu_optimizations(pm_cpu, target_device="cpu")
     assert pm_cpu.to_dev == "cpu"
+
+
+def test_check_vram_guard_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
+    from worker.engines.base import InsufficientVRAMError
+    from worker.engines.fake import FakeEngine
+    from worker.memory import GPUInfo
+    from worker.schema import Item
+
+    engine = FakeEngine()
+    engine.min_vram_gb = 10.0
+    item = Item(id="test_it", engine="fake", prompt="test", width=512, height=512)
+
+    # Mock a GPU with 15GB total, but only 3.7GB free (because model is loaded)
+    loaded_gpu = GPUInfo(index=0, name="Tesla T4", total_vram_mb=15000, free_vram_mb=3700, compute_capability=(7, 5))
+    monkeypatch.setattr("worker.engines.base.detect_gpus", lambda: [loaded_gpu])
+
+    # Case 1: Model is NOT loaded -> 3.7GB free is less than 10GB req -> raises InsufficientVRAMError
+    engine.is_loaded = False
+    with pytest.raises(InsufficientVRAMError):
+        engine.check_vram_guard(item)
+
+    # Case 2: Model IS loaded -> 3.7GB free is plenty of headroom for activations -> does NOT raise
+    engine.is_loaded = True
+    engine.check_vram_guard(item)
+
+    # Case 3: GPU total capacity is too small (6GB card for 10GB model) -> raises InsufficientVRAMError
+    tiny_gpu = GPUInfo(index=0, name="GTX 1060", total_vram_mb=6000, free_vram_mb=5000, compute_capability=(6, 1))
+    monkeypatch.setattr("worker.engines.base.detect_gpus", lambda: [tiny_gpu])
+    with pytest.raises(InsufficientVRAMError):
+        engine.check_vram_guard(item)

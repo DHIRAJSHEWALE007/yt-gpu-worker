@@ -108,15 +108,28 @@ class Engine(ABC):
         self.dtype: Any = None
 
     def check_vram_guard(self, item: Item) -> None:
-        """Verify GPU has enough free VRAM before attempting allocation."""
+        """Verify GPU has enough VRAM capacity before loading or generating."""
         gpus = detect_gpus()
         if not gpus:
             return
 
+        total_gb = gpus[0].total_vram_mb / 1024.0
         free_gb = gpus[0].free_vram_mb / 1024.0
-        req_gb = max(self.min_vram_gb, self.vram_estimate(item))
-        if free_gb < req_gb * 0.85:
-            raise InsufficientVRAMError(self.engine_id, req_gb, free_gb)
+
+        # 1. Total hardware capacity check: verify GPU has enough total capacity for model
+        if total_gb < self.min_vram_gb * 0.85:
+            raise InsufficientVRAMError(self.engine_id, self.min_vram_gb, total_gb)
+
+        # 2. Before model is loaded: verify enough free VRAM is available to allocate weights
+        if not self.is_loaded:
+            req_gb = max(self.min_vram_gb, self.vram_estimate(item))
+            if free_gb < req_gb * 0.85:
+                raise InsufficientVRAMError(self.engine_id, req_gb, free_gb)
+        else:
+            # 3. Model is ALREADY loaded: verify minimal working headroom (0.5 GB) remains for activations
+            min_working_headroom_gb = 0.5
+            if free_gb < min_working_headroom_gb:
+                raise InsufficientVRAMError(self.engine_id, min_working_headroom_gb, free_gb)
 
     def apply_pipeline_optimizations(self, target_device: str, gpu_id: int = 0) -> None:
         """Safely apply diffusers optimizations without crashing if methods are missing."""
