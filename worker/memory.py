@@ -4,6 +4,7 @@ Rules:
 - Tesla T4 (CC 7.5) and Tesla P100 (CC 6.0) must use fp16 ONLY (never bf16).
 - Ampere / Ada / Hopper (CC >= 8.0) support native bfloat16.
 - Graceful OOM retry downscales resolution or enables offloading; never crashes the run.
+- Aggressively clears GPU and CPU RAM (via malloc_trim) between models.
 """
 
 from __future__ import annotations
@@ -109,7 +110,8 @@ def get_system_ram_mb() -> Tuple[float, float]:
 
 
 def clear_gpu_memory() -> None:
-    """Aggressively collect Python garbage and clear PyTorch CUDA caches."""
+    """Aggressively collect Python garbage, clear PyTorch CUDA caches, and release system RAM."""
+    gc.collect()
     gc.collect()
     try:
         import torch
@@ -117,6 +119,14 @@ def clear_gpu_memory() -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+    # Free dirty memory pages back to the Linux host OS
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
     except Exception:
         pass
 
