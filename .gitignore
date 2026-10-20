@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Artifacts & Outputs
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.mp4
+*.webm
+*.zip
+results.json
+results.json.tmp
+pack.json
+bakeoff.json
+contact_sheet.html
+
+# Notebooks & IDEs
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store

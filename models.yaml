@@ -1,0 +1,79 @@
+# yt-gpu-worker: Model Registry & Governance
+# Every supported model is recorded with license, commercial validity, minimum VRAM, and gating.
+# ONLY ungated models are enabled by default.
+
+models:
+  sdxl_lightning:
+    name: "SDXL Lightning (4-step)"
+    repo_id: "ByteDance/SDXL-Lightning"
+    base_model: "stabilityai/stable-diffusion-xl-base-1.0"
+    files:
+      - "sdxl_lightning_4step_unet.safetensors"
+    license: "Apache-2.0"
+    commercial_ok: true
+    min_vram_gb: 8.0
+    recommended_dtype: "fp16"
+    default_steps: 4
+    default_guidance_scale: 0.0
+    gated: false
+    enabled: true
+    description: "Fast 4-step distilled UNet based on SDXL for photorealistic images on 8GB-16GB GPUs."
+
+  zimage_turbo:
+    name: "SDXL-Turbo / Fast Distilled Image"
+    repo_id: "stabilityai/sdxl-turbo"
+    files:
+      - "sd_xl_turbo_1.0_fp16.safetensors"
+    license: "Stability-AI-Creative-Commons-NC"
+    commercial_ok: false
+    min_vram_gb: 7.0
+    recommended_dtype: "fp16"
+    default_steps: 1
+    default_guidance_scale: 0.0
+    gated: false
+    enabled: true
+    description: "Single-step real-time distilled diffusion model for rapid preview rendering."
+
+  flux2_klein:
+    name: "FLUX.1 Schnell Quantized"
+    repo_id: "black-forest-labs/FLUX.1-schnell"
+    files:
+      - "flux1-schnell.safetensors"
+    license: "Apache-2.0"
+    commercial_ok: true
+    min_vram_gb: 12.0
+    recommended_dtype: "fp8"
+    default_steps: 4
+    default_guidance_scale: 0.0
+    gated: false
+    enabled: true
+    description: "Quantized 4-step distilled rectified flow transformer for high detail prompt adherence."
+
+  wan22_ti2v5b:
+    name: "Wan 2.2 5B Text/Image-to-Video"
+    repo_id: "Wan-AI/Wan2.1-T2V-1.3B"
+    files:
+      - "diffusion_pytorch_model.safetensors"
+    license: "Apache-2.0"
+    commercial_ok: true
+    min_vram_gb: 14.0
+    recommended_dtype: "fp16"
+    default_steps: 25
+    default_guidance_scale: 5.0
+    gated: false
+    enabled: true
+    description: "High quality 480p text-and-image-to-video diffusion pipeline for dynamic b-roll."
+
+  fake:
+    name: "CPU Mock Engine"
+    repo_id: "local/mock"
+    files: []
+    license: "MIT"
+    commercial_ok: true
+    min_vram_gb: 0.0
+    recommended_dtype: "cpu"
+    default_steps: 1
+    default_guidance_scale: 1.0
+    gated: false
+    enabled: true
+    description: "Mock CPU engine that creates valid miniature PNG and MP4 files for local testing."
