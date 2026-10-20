@@ -1,6 +1,5 @@
 # yt-gpu-worker: Model Registry & Governance
 # Every supported model is recorded with license, commercial validity, minimum VRAM, and gating.
-# ONLY ungated models are enabled by default.
 
 models:
   sdxl_lightning:
@@ -45,24 +44,24 @@ models:
     recommended_dtype: "fp8"
     default_steps: 4
     default_guidance_scale: 0.0
-    gated: false
+    gated: true
     enabled: true
-    description: "Quantized 4-step distilled rectified flow transformer for high detail prompt adherence."
+    description: "Quantized 4-step distilled rectified flow transformer for high detail prompt adherence (requires Hugging Face license acceptance and HF_TOKEN)."
 
   wan22_ti2v5b:
-    name: "Wan 2.2 5B Text/Image-to-Video"
-    repo_id: "Wan-AI/Wan2.1-T2V-1.3B"
+    name: "Wan 2.1 1.3B Text-to-Video"
+    repo_id: "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files:
       - "diffusion_pytorch_model.safetensors"
     license: "Apache-2.0"
     commercial_ok: true
-    min_vram_gb: 14.0
+    min_vram_gb: 12.0
     recommended_dtype: "fp16"
     default_steps: 25
     default_guidance_scale: 5.0
     gated: false
     enabled: true
-    description: "High quality 480p text-and-image-to-video diffusion pipeline for dynamic b-roll."
+    description: "High quality 480p text-to-video diffusion pipeline using Wan 2.1 1.3B for dynamic b-roll."
 
   fake:
     name: "CPU Mock Engine"

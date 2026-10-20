@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -11,6 +12,21 @@ from worker.memory import clear_gpu_memory, detect_gpus, get_recommended_torch_d
 from worker.schema import Item
 
 logger = logging.getLogger(__name__)
+
+
+def _get_hf_token() -> Optional[str]:
+    """Retrieve Hugging Face token from environment or Kaggle Secrets."""
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    if token:
+        return token.strip()
+    try:
+        from kaggle_secrets import UserSecretsClient  # type: ignore
+        token = UserSecretsClient().get_secret("HF_TOKEN")
+        if token:
+            return token.strip()
+    except Exception:
+        pass
+    return None
 
 
 class Flux2KleinEngine(Engine):
@@ -31,10 +47,29 @@ class Flux2KleinEngine(Engine):
         target_dtype = dtype or get_recommended_torch_dtype(gpus[0] if gpus else None)
 
         repo_id = self.config.get("repo_id", "black-forest-labs/FLUX.1-schnell")
-        self.pipe = FluxPipeline.from_pretrained(
-            repo_id,
-            torch_dtype=target_dtype,
-        )
+        token = _get_hf_token()
+
+        logger.info("Loading FLUX.1 pipeline from %s (authenticated: %s)...", repo_id, bool(token))
+
+        try:
+            self.pipe = FluxPipeline.from_pretrained(
+                repo_id,
+                torch_dtype=target_dtype,
+                token=token,
+            )
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if "401" in err_str or "unauthorized" in err_str or "gated" in err_str or "restricted" in err_str:
+                raise RuntimeError(
+                    f"\n[FLUX AUTHENTICATION REQUIRED]\n"
+                    f"Model '{repo_id}' is a gated Hugging Face repository.\n"
+                    f"To enable it:\n"
+                    f"  1. Accept the license at: https://huggingface.co/{repo_id}\n"
+                    f"  2. In your Kaggle notebook, set your HF access token before running:\n"
+                    f"     import os; os.environ['HF_TOKEN'] = 'hf_your_token_here'\n"
+                    f"     (or add 'HF_TOKEN' to Kaggle Secrets -> Add-ons -> Secrets)\n"
+                ) from exc
+            raise
 
         gpu_id = 0
         if target_device.startswith("cuda:") and target_device.split(":")[1].isdigit():
