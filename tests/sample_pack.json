@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "pack_id": "sample_pack_001",
+  "created_at": "2026-10-20T11:00:00Z",
+  "max_runtime_minutes": 10.0,
+  "output_dir": "outputs",
+  "items": [
+    {
+      "id": "sample_shot_01",
+      "engine": "fake",
+      "prompt": "A scenic mountain landscape with a river at sunset, photorealistic",
+      "negative_prompt": "blurry, low quality",
+      "width": 1024,
+      "height": 1024,
+      "seed": 42,
+      "media_type": "image"
+    },
+    {
+      "id": "sample_shot_02",
+      "engine": "fake",
+      "prompt": "Futuristic neon city street in the rain with glowing reflections",
+      "negative_prompt": "blurry, dark",
+      "width": 768,
+      "height": 768,
+      "seed": 101,
+      "media_type": "image"
+    },
+    {
+      "id": "sample_clip_03",
+      "engine": "fake",
+      "prompt": "Cinematic camera sweep across ocean waves and rugged cliffs",
+      "width": 854,
+      "height": 480,
+      "seed": 202,
+      "media_type": "video",
+      "duration_seconds": 3.0
+    }
+  ]
+}

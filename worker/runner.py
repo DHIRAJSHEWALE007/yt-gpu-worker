@@ -334,3 +334,42 @@ def run_pack(
         all_results.extend(res)
 
     return all_results
+
+
+if __name__ == "__main__":
+    import argparse
+    from worker.schema import load_pack
+
+    parser = argparse.ArgumentParser(description="yt-gpu-worker: Run batch generation pack")
+    parser.add_argument("--pack", type=str, default="tests/sample_pack.json", help="Path to pack.json")
+    parser.add_argument("--engine", type=str, default=None, help="Override engine for all items (e.g. fake, sdxl_lightning)")
+    parser.add_argument("--out", type=str, default="./out", help="Output directory for rendered assets and results.json")
+    parser.add_argument("--gpus", type=int, nargs="*", default=None, help="GPU device indices to use")
+
+    args = parser.parse_args()
+
+    pack_path = Path(args.pack)
+    if not pack_path.is_file():
+        repo_root = Path(__file__).resolve().parent.parent
+        alt_path = repo_root / args.pack
+        if alt_path.is_file():
+            pack_path = alt_path
+        else:
+            raise FileNotFoundError(f"Pack file not found: {args.pack}")
+
+    logger.info("Loading pack from: %s", pack_path)
+    loaded_pack = load_pack(pack_path)
+
+    if args.engine:
+        logger.info("Overriding engine to '%s' for all items", args.engine)
+        for it in loaded_pack.items:
+            it.engine = args.engine
+
+    target_out = Path(args.out)
+    target_out.mkdir(parents=True, exist_ok=True)
+
+    results = run_pack(loaded_pack, output_dir=target_out, gpu_indices=args.gpus)
+    print(f"\nExecution complete! Rendered {len(results)} items into {target_out.resolve()}:")
+    for r in results:
+        status_symbol = "[OK]" if r.status in ("success", "skipped") else "[FAILED]"
+        print(f"  {status_symbol} {r.item_id} ({r.engine}) -> {r.output_path or r.error} [{r.execution_time_seconds}s]")
