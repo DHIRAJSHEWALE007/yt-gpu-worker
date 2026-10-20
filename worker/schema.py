@@ -87,15 +87,44 @@ def load_pack(source: Union[str, Path, dict]) -> Pack:
     if isinstance(source, dict):
         return Pack.model_validate(source)
 
-    p = Path(source)
-    if p.is_file():
-        content = p.read_text(encoding="utf-8")
-        data = json.loads(content)
-        return Pack.model_validate(data)
+    raw_str = str(source).strip()
 
-    # Try parsing as JSON string directly
-    data = json.loads(str(source))
-    return Pack.model_validate(data)
+    # If it starts with JSON object delimiter, parse directly as inline JSON string
+    if raw_str.startswith("{") or raw_str.startswith("["):
+        try:
+            data = json.loads(raw_str)
+            return Pack.model_validate(data)
+        except Exception as e:
+            raise ValueError(f"Failed to parse inline pack JSON string: {e}") from e
+
+    # Normalize backslashes (in case Windows-style path was passed in Linux bash)
+    norm_str = raw_str.replace("\\", "/")
+    repo_root = Path(__file__).resolve().parent.parent
+
+    candidates = [
+        Path(raw_str),
+        Path(norm_str),
+        repo_root / norm_str,
+        repo_root / raw_str,
+    ]
+
+    # Bash unescaped backslash recovery: "testssample_pack.json" -> "tests/sample_pack.json"
+    if "testssample" in norm_str:
+        fixed = norm_str.replace("testssample", "tests/sample")
+        candidates.extend([Path(fixed), repo_root / fixed])
+
+    for p in candidates:
+        if p.is_file():
+            try:
+                content = p.read_text(encoding="utf-8")
+                data = json.loads(content)
+                return Pack.model_validate(data)
+            except Exception as e:
+                raise ValueError(f"Failed to parse pack file '{p}': {e}") from e
+
+    raise FileNotFoundError(
+        f"Pack file not found: '{source}'. Checked paths: {[str(c) for c in candidates]}"
+    )
 
 
 def save_pack(pack: Pack, target_path: Union[str, Path]) -> Path:

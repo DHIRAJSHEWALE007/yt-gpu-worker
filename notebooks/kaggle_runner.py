@@ -59,6 +59,35 @@ def setup_repository(target_dir: Path) -> Path:
     return target_dir
 
 
+def resolve_pack_path(user_input: str | None) -> Path:
+    """Resolve pack file path with smart fallbacks for Linux bash backslash escaping."""
+    from worker.transports.kaggle_pack import find_default_pack_file
+
+    if not user_input:
+        return find_default_pack_file()
+
+    raw = str(user_input).strip()
+    norm = raw.replace("\\", "/")
+    repo_root = Path(__file__).resolve().parent.parent
+
+    candidates = [
+        Path(raw),
+        Path(norm),
+        repo_root / norm,
+        repo_root / raw,
+    ]
+
+    if "testssample" in norm:
+        fixed = norm.replace("testssample", "tests/sample")
+        candidates.extend([Path(fixed), repo_root / fixed])
+
+    for c in candidates:
+        if c.is_file():
+            return c.resolve()
+
+    return find_default_pack_file()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kaggle Runner for yt-gpu-worker")
     parser.add_argument("--pack", type=str, default=None, help="Path to input pack.json")
@@ -77,7 +106,7 @@ def main() -> None:
     from worker.runner import run_pack
     from worker.transports.kaggle_pack import find_default_pack_file
 
-    pack_path = Path(args.pack) if args.pack else find_default_pack_file()
+    pack_path = resolve_pack_path(args.pack)
     logger.info("Loading pack from: %s", pack_path)
     pack = load_pack(pack_path)
 
