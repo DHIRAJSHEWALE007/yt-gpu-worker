@@ -37,14 +37,11 @@ class ZImageTurboEngine(Engine):
             variant="fp16" if target_dtype == torch.float16 else None,
         )
 
-        if target_device == "cuda":
-            self.pipe.enable_vae_tiling()
-            if hasattr(self.pipe, "enable_model_cpu_offload"):
-                self.pipe.enable_model_cpu_offload()
-            else:
-                self.pipe.to(target_device)
-        else:
-            self.pipe.to("cpu")
+        gpu_id = 0
+        if target_device.startswith("cuda:") and target_device.split(":")[1].isdigit():
+            gpu_id = int(target_device.split(":")[1])
+
+        self.apply_pipeline_optimizations(target_device, gpu_id=gpu_id)
 
         self.device = target_device
         self.dtype = target_dtype
@@ -58,14 +55,26 @@ class ZImageTurboEngine(Engine):
         import torch
 
         steps = item.steps or 1
-        guidance = item.guidance_scale or 0.0
-        generator = torch.Generator(device=self.device).manual_seed(item.seed) if item.seed is not None else None
+        guidance = item.guidance_scale if item.guidance_scale is not None else 0.0
+
+        generator = None
+        if item.seed is not None:
+            try:
+                generator = torch.Generator(device=self.device).manual_seed(item.seed)
+            except Exception:
+                generator = torch.Generator(device="cpu").manual_seed(item.seed)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         target_file = output_dir / f"{item.id}.png"
 
+        # Multiples of 8 check for diffusers VAE compatibility
+        w = ((item.width // 8) * 8) if item.width else 512
+        h = ((item.height // 8) * 8) if item.height else 512
+
         result = self.pipe(
             prompt=item.prompt,
+            width=w,
+            height=h,
             num_inference_steps=steps,
             guidance_scale=guidance,
             generator=generator,

@@ -156,7 +156,15 @@ class PackRunner:
         cfg = self.models_config.get(engine_id, {})
         engine = get_engine(engine_id, config=cfg)
         logger.info("Loading new engine weights for: %s...", engine_id)
-        engine.load()
+        target_dev = None
+        if self.gpu_index is not None:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    target_dev = f"cuda:{self.gpu_index}"
+            except Exception:
+                pass
+        engine.load(device=target_dev)
         self._active_engine = engine
         return engine
 
@@ -220,6 +228,11 @@ class PackRunner:
                 # 2. Check if output already exists (Idempotency / Resumability)
                 expected_ext = "mp4" if item.media_type == "video" else "png"
                 expected_file = self.output_dir / f"{item.id}.{expected_ext}"
+                if not (expected_file.is_file() and expected_file.stat().st_size > 0):
+                    alt_ext = "png" if expected_ext == "mp4" else "mp4"
+                    alt_file = self.output_dir / f"{item.id}.{alt_ext}"
+                    if alt_file.is_file() and alt_file.stat().st_size > 0:
+                        expected_file = alt_file
 
                 if expected_file.is_file() and expected_file.stat().st_size > 0:
                     logger.info("[RESUME] Skipping item %s — output already exists: %s", item.id, expected_file.name)
@@ -333,7 +346,8 @@ def run_pack(
         res = runner.run()
         all_results.extend(res)
 
-    return all_results
+    final_results = load_results(target_res)
+    return final_results if final_results else all_results
 
 
 if __name__ == "__main__":
