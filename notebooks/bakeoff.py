@@ -16,6 +16,7 @@ For every enabled engine in models.yaml:
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 from pathlib import Path
@@ -49,21 +50,21 @@ SEEDS = [101, 202, 303, 404, 505]
 RESOLUTIONS = [
     (768, 768),
     (1024, 1024),
-    (832, 1216),  # Standard 9:16 portrait
+    (832, 1216),
 ]
 
 
 def generate_contact_sheet_html(results: Dict[str, Any], output_path: Path) -> None:
-    """Generate a clean visual HTML contact sheet comparing the bakeoff outputs."""
+    """Generate high-contrast dark-mode HTML contact sheet comparing all engines."""
     html_lines = [
         "<!DOCTYPE html>",
         "<html lang='en'>",
         "<head>",
-        "  <meta charset='utf-8'>",
-        "  <title>yt-gpu-worker: Model Bakeoff Report</title>",
+        "  <meta charset='UTF-8'/>",
+        "  <title>Model Bakeoff Comparison Sheet</title>",
         "  <style>",
-        "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0B0F19; color: #F8FAFC; margin: 0; padding: 24px; }",
-        "    h1 { color: #00F0FF; font-size: 24px; margin-bottom: 8px; }",
+        "    body { background: #0B0F19; color: #F8FAFC; font-family: -apple-system, sans-serif; padding: 24px; }",
+        "    h1, h2 { color: #38BDF8; font-weight: 700; }",
         "    .engine-section { background: #131B2E; border: 1px solid #1E293B; border-radius: 12px; padding: 20px; margin-bottom: 24px; }",
         "    .metrics-table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 13px; margin: 12px 0; }",
         "    .metrics-table th, .metrics-table td { border: 1px solid #334155; padding: 8px 12px; text-align: left; }",
@@ -80,7 +81,7 @@ def generate_contact_sheet_html(results: Dict[str, Any], output_path: Path) -> N
     ]
 
     for engine_id, data in results.items():
-        html_lines.append(f"  <div class='engine-section'>")
+        html_lines.append("  <div class='engine-section'>")
         html_lines.append(f"    <h2>Engine: {engine_id}</h2>")
         html_lines.append(f"    <p>Load Time: {data.get('load_time_sec', 0):.2f}s | Failures: {data.get('total_failures', 0)}</p>")
         html_lines.append("    <table class='metrics-table'>")
@@ -174,10 +175,17 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
                     "media_type": "video",
                     "file_path": str(out_path.name),
                 })
+                vram_mb = 0.0
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+                except Exception:
+                    pass
                 engine_results["resolutions"]["854x480"] = {
                     "avg_seconds_per_item": dur,
                     "samples_count": 1,
-                    "peak_vram_mb": 0.0,
+                    "peak_vram_mb": vram_mb,
                 }
             except Exception as e:
                 logger.error("Video clip generation failed: %s", e)
@@ -217,10 +225,17 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
                         engine_results["total_failures"] += 1
 
                 avg_sec = round(sum(latencies) / len(latencies), 2) if latencies else 0.0
+                vram_mb = 0.0
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+                except Exception:
+                    pass
                 engine_results["resolutions"][res_key] = {
                     "avg_seconds_per_item": avg_sec,
                     "samples_count": len(latencies),
-                    "peak_vram_mb": 0.0,
+                    "peak_vram_mb": vram_mb,
                 }
 
         engine.unload()
@@ -238,6 +253,38 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
     return bakeoff_results
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="yt-gpu-worker: Run model bakeoff benchmark suite")
+    parser.add_argument("--engines", nargs="*", default=None, help="Specific engine IDs to benchmark (e.g. zimage_turbo sdxl_lightning)")
+    parser.add_argument("--all", action="store_true", help="Benchmark all enabled models in models.yaml (excluding fake unless --include-fake)")
+    parser.add_argument("--include-fake", action="store_true", help="Include fake mock engine in the run")
+    parser.add_argument("--out", type=str, default="./outputs/bakeoff", help="Directory to save bakeoff.json and contact_sheet.html")
+    args = parser.parse_args()
+
+    out_dir = Path(args.out)
+
+    models_path = _REPO_ROOT / "models.yaml"
+    models_cfg = yaml.safe_load(models_path.read_text(encoding="utf-8")).get("models", {})
+
+    engines_to_run = None
+    if args.engines:
+        engines_to_run = args.engines
+    elif args.all:
+        engines_to_run = [e for e, c in models_cfg.items() if c.get("enabled") and (args.include_fake or e != "fake")]
+    else:
+        # If no arguments specified: benchmark all real models if GPU detected, otherwise fake
+        gpus = detect_gpus()
+        if gpus:
+            engines_to_run = [e for e, c in models_cfg.items() if c.get("enabled") and e != "fake"]
+        else:
+            engines_to_run = ["fake"]
+
+    logger.info("Executing bakeoff on engines: %s", engines_to_run)
+    run_bakeoff(output_dir=out_dir, engines_to_test=engines_to_run)
+    print(f"\nBakeoff complete! Results saved to:")
+    print(f"  JSON Metrics:  {(out_dir / 'bakeoff.json').resolve()}")
+    print(f"  Contact Sheet: {(out_dir / 'contact_sheet.html').resolve()}\n")
+
+
 if __name__ == "__main__":
-    # Test with fake engine by default when running standalone locally
-    run_bakeoff(engines_to_test=["fake"])
+    main()
