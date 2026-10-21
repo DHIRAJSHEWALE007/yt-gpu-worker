@@ -92,11 +92,19 @@ class SDXLLightningEngine(Engine):
         )
 
         # 1. Build UNet2DConditionModel from base model configuration
-        unet = UNet2DConditionModel.from_config(
-            base_repo,
-            subfolder="unet",
-            revision=base_rev,
-        ).to(target_device, dtype=target_dtype)
+        if hasattr(UNet2DConditionModel, "load_config") and callable(getattr(UNet2DConditionModel, "load_config")):
+            unet_config = UNet2DConditionModel.load_config(
+                base_repo,
+                subfolder="unet",
+                revision=base_rev,
+            )
+            unet = UNet2DConditionModel.from_config(unet_config).to(target_device, dtype=target_dtype)
+        else:
+            unet = UNet2DConditionModel.from_config(
+                base_repo,
+                subfolder="unet",
+                revision=base_rev,
+            ).to(target_device, dtype=target_dtype)
 
         # 2. Download and load ByteDance SDXL-Lightning UNet safetensors weights
         unet_weight_path = hf_hub_download(

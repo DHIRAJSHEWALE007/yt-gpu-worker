@@ -31,6 +31,11 @@ def test_create_20_item_pack(tmp_path: Path) -> None:
 def test_throughput_benchmark_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify throughput harness runs Mode A & Mode B, logs RAM/time/OOM, and picks faster mode."""
     monkeypatch.setenv("STUDIO_FAKE_PROVIDERS", "1")
+    recorded_updates = {}
+    monkeypatch.setattr(
+        "scripts.bench_throughput.update_models_yaml_parallel_mode",
+        lambda e, m: recorded_updates.update({e: m}),
+    )
 
     out_dir = tmp_path / "throughput_fake"
     report = run_throughput_benchmark(
@@ -67,6 +72,7 @@ def test_throughput_benchmark_execution(tmp_path: Path, monkeypatch: pytest.Monk
     assert json_path.is_file()
     saved = json.loads(json_path.read_text(encoding="utf-8"))
     assert saved["engine_id"] == "fake"
+    assert "fake" in recorded_updates
 
 
 def test_runner_parallel_mode_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

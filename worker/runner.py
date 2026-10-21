@@ -121,9 +121,13 @@ class PackRunner:
 
         gpus = detect_gpus()
         vram_str = "CPU"
-        if gpus and self.gpu_index < len(gpus):
+        if gpus and self.gpu_index is not None and self.gpu_index < len(gpus):
             g = gpus[self.gpu_index]
-            vram_str = f"{g.free_vram_mb / 1024:.1f}/{g.total_vram_mb / 1024:.1f}GB free"
+            vram_str = f"{g.free_vram_mb / 1024:.1f}/{g.total_vram_mb / 1024:.1f}GB free (GPU {self.gpu_index})"
+        elif gpus:
+            total_free = sum(g.free_vram_mb for g in gpus) / 1024.0
+            total_vram = sum(g.total_vram_mb for g in gpus) / 1024.0
+            vram_str = f"{total_free:.1f}/{total_vram:.1f}GB free across {len(gpus)} GPUs"
 
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
         logger.info(
@@ -395,6 +399,7 @@ def run_pack(
         effective_parallel_mode = "single_process_multi_gpu" if primary_engine in ("flux2_klein", "wan21_t2v_1_3b", "wan22_ti2v5b") else "process_per_gpu"
 
     target_out = output_dir or Path(pack.output_dir)
+    target_out.mkdir(parents=True, exist_ok=True)
     target_res = results_file or (target_out / "results.json")
 
     # Mode A: Single process with all GPUs visible
@@ -427,7 +432,7 @@ def run_pack(
             max_engine_ram = est
 
     safe_host_ram = ram_info.available_ram_gb * 0.85
-    max_workers_for_ram = max(1, int(safe_host_ram // max_engine_ram)) if max_engine_ram > 0 else len(available_indices)
+    max_workers_for_ram = max(1, int(round((safe_host_ram + 0.5) / max_engine_ram))) if max_engine_ram > 0 else len(available_indices)
     allowed_workers = min(len(available_indices), max_workers_for_ram)
 
     if allowed_workers < len(available_indices):
@@ -478,12 +483,14 @@ def run_pack(
             sub_pack = pack.model_copy(update={"items": sub_items, "pack_id": f"{pack.pack_id}_gpu{gpu_idx}"})
             sub_pack_path = target_out / f".temp_pack_gpu{gpu_idx}.json"
             sub_pack_path.write_text(sub_pack.model_dump_json(indent=2), encoding="utf-8")
+            part_res_path = target_out / f".temp_results_gpu{gpu_idx}.json"
 
             cmd = [
                 sys.executable,
                 "-m", "worker.runner",
                 "--pack", str(sub_pack_path),
                 "--out", str(target_out),
+                "--results", str(part_res_path),
                 "--gpus", "0",
             ]
             if allow_test_engines:
@@ -497,6 +504,11 @@ def run_pack(
             child_env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
             try:
                 subprocess.run(cmd, env=child_env, check=True)
+                if part_res_path.is_file():
+                    part_results = load_results(part_res_path)
+                    for r in part_results:
+                        append_result_atomic(r, target_res)
+                    part_res_path.unlink()
             finally:
                 if sub_pack_path.is_file():
                     sub_pack_path.unlink()
