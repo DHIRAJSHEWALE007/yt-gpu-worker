@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import logging
 from pathlib import Path
 import statistics
@@ -172,206 +173,257 @@ def generate_contact_sheet_html(results: Dict[str, Any], output_path: Path) -> N
     logger.info("Saved contact sheet HTML to: %s", output_path)
 
 
-def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | None = None) -> Dict[str, Any]:
-    """Execute complete bakeoff benchmark across engines."""
+def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) -> Optional[Dict[str, Any]]:
+    """Benchmark a single engine in isolation and return its metrics dict."""
+    logger.info("=== Running Bakeoff for Engine: %s ===", engine_id)
+
+    # 1. Load benchmark
+    t0 = time.time()
+    try:
+        engine = get_engine(engine_id, config=cfg)
+        engine.load()
+    except Exception as e:
+        logger.warning("Could not load %s (requires GPU weights?): %s", engine_id, e)
+        return None
+
+    load_time = time.time() - t0
+    pipe_obj = getattr(engine, "pipe", None)
+    pipe_class_name = pipe_obj.__class__.__name__ if pipe_obj is not None else engine.__class__.__name__
+
+    diffusers_ver = "unknown"
+    try:
+        import diffusers
+        diffusers_ver = getattr(diffusers, "__version__", "unknown")
+    except Exception:
+        pass
+
+    engine_dtype = str(getattr(engine, "dtype", cfg.get("recommended_dtype", "unknown")))
+
+    engine_results: Dict[str, Any] = {
+        "engine_id": engine_id,
+        "pipeline_class": pipe_class_name,
+        "repo_id": cfg.get("repo_id"),
+        "revision": cfg.get("revision"),
+        "dtype": engine_dtype,
+        "diffusers_version": diffusers_ver,
+        "role": cfg.get("role"),
+        "load_time_sec": round(load_time, 2),
+        "resolutions": {},
+        "total_failures": 0,
+        "samples": [],
+    }
+    logger.info(
+        "Engine %s loaded successfully | Pipeline: %s | Revision: %s | Load time: %.2fs",
+        engine_id,
+        pipe_class_name,
+        cfg.get("revision"),
+        load_time,
+    )
+
+    # 2. Benchmark fixed resolutions across 5 prompts and seeds
+    is_video = (cfg.get("role") == "hero_clip" or engine_id in ("wan21_t2v_1_3b", "wan22_ti2v5b"))
+    resolutions = [(1280, 720)] if is_video else RESOLUTIONS
+
+    for (w, h) in resolutions:
+        logger.info("Testing resolution %dx%d on %s...", w, h, engine_id)
+
+        if is_video:
+            latencies: List[float] = []
+            for idx in range(min(len(PROMPTS), 1)):
+                p = PROMPTS[idx]
+                s = SEEDS[idx]
+                item = Item(
+                    id=f"{engine_id}_{w}x{h}_{idx}",
+                    engine=engine_id,
+                    prompt=p,
+                    width=w,
+                    height=h,
+                    seed=s,
+                    media_type="video",
+                    duration_seconds=5,
+                    fps=16,
+                )
+
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.reset_peak_memory_stats()
+                except Exception:
+                    pass
+
+                t_gen = time.time()
+                try:
+                    out_path = engine.generate(item, out_dir)
+                    dur = round(time.time() - t_gen, 2)
+                    item_vram_mb = 0.0
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            item_vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+                    except Exception:
+                        pass
+
+                    latencies.append(dur)
+                    engine_results["samples"].append({
+                        "seed": s,
+                        "prompt": p,
+                        "width": w,
+                        "height": h,
+                        "latency_sec": dur,
+                        "is_warmup": False,
+                        "peak_vram_mb": item_vram_mb,
+                        "media_type": "video",
+                        "file": out_path.name if out_path else "",
+                    })
+                except Exception as gen_err:
+                    logger.error("Bakeoff sample generation failed on %s (%dx%d): %s", engine_id, w, h, gen_err)
+                    engine_results["total_failures"] += 1
+
+            engine_results["resolutions"][f"{w}x{h}"] = {
+                "total_samples": len(latencies),
+                "median_seconds_per_item": round(statistics.median(latencies), 2) if latencies else None,
+                "min_seconds_per_item": round(min(latencies), 2) if latencies else None,
+                "max_seconds_per_item": round(max(latencies), 2) if latencies else None,
+            }
+        else:
+            # Image benchmark
+            res_key = f"{w}x{h}"
+            latencies: List[float] = []
+            vram_measurements: List[float] = []
+
+            for idx in range(min(len(PROMPTS), 5)):
+                p = PROMPTS[idx]
+                s = SEEDS[idx]
+                item = Item(
+                    id=f"{engine_id}_{w}x{h}_{idx}",
+                    engine=engine_id,
+                    prompt=p,
+                    width=w,
+                    height=h,
+                    seed=s,
+                    media_type="image",
+                )
+
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.reset_peak_memory_stats()
+                except Exception:
+                    pass
+
+                t_gen = time.time()
+                try:
+                    out_path = engine.generate(item, out_dir)
+                    dur = round(time.time() - t_gen, 2)
+
+                    item_vram_mb = 0.0
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            item_vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+                    except Exception:
+                        pass
+
+                    latencies.append(dur)
+                    vram_measurements.append(item_vram_mb)
+                    is_warmup = (idx == 0)
+
+                    engine_results["samples"].append({
+                        "seed": s,
+                        "prompt": p,
+                        "width": w,
+                        "height": h,
+                        "latency_sec": dur,
+                        "is_warmup": is_warmup,
+                        "peak_vram_mb": item_vram_mb,
+                        "media_type": "image",
+                        "file": out_path.name if out_path else "",
+                    })
+                except Exception as gen_err:
+                    logger.error("Bakeoff sample generation failed on %s (%dx%d): %s", engine_id, w, h, gen_err)
+                    engine_results["total_failures"] += 1
+
+            bench_latencies = latencies[1:] if len(latencies) > 1 else latencies
+            engine_results["resolutions"][res_key] = {
+                "total_samples": len(latencies),
+                "warmup_seconds": latencies[0] if latencies else None,
+                "median_seconds_per_item": round(statistics.median(bench_latencies), 2) if bench_latencies else None,
+                "min_seconds_per_item": round(min(bench_latencies), 2) if bench_latencies else None,
+                "max_seconds_per_item": round(max(bench_latencies), 2) if bench_latencies else None,
+                "peak_vram_mb": max(vram_measurements) if vram_measurements else None,
+            }
+
+    engine.unload()
+    del engine
+    clear_gpu_memory()
+
+    if engine_results["samples"]:
+        return engine_results
+    logger.info("Excluding engine '%s' from results: 0 successful samples were rendered.", engine_id)
+    return None
+
+
+def run_bakeoff(
+    output_dir: Path | None = None,
+    engines_to_test: List[str] | None = None,
+    use_subprocess: bool = True,
+) -> Dict[str, Any]:
+    """Execute complete bakeoff benchmark across engines.
+    
+    When use_subprocess is True and testing multiple engines, each engine executes
+    in an independent child process so all host RAM is completely returned to the OS.
+    """
+    import subprocess
+    import sys
+
     out_dir = output_dir or (_REPO_ROOT / "outputs" / "bakeoff")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     models_path = _REPO_ROOT / "worker" / "models.yaml"
-    if not models_path.is_file():
-        models_path = _REPO_ROOT / "worker" / "models.yaml"
-    if not models_path.is_file():
-        models_path = _REPO_ROOT / "models.yaml"
     models_cfg = yaml.safe_load(models_path.read_text(encoding="utf-8")).get("models", {})
 
-    bakeoff_results: Dict[str, Any] = {}
-
+    target_engines: List[str] = []
     for engine_id, cfg in models_cfg.items():
         if engines_to_test and engine_id not in engines_to_test:
             continue
         if not engines_to_test and not cfg.get("enabled", False):
             continue
+        target_engines.append(engine_id)
 
-        logger.info("=== Running Bakeoff for Engine: %s ===", engine_id)
+    bakeoff_results: Dict[str, Any] = {}
 
-        # 1. Load benchmark
-        t0 = time.time()
-        try:
-            engine = get_engine(engine_id, config=cfg)
-            engine.load()
-        except Exception as e:
-            logger.warning("Could not load %s (requires GPU weights?): %s", engine_id, e)
-            # Skip engine entirely if it fails to load; do not write a stub entry
-            continue
+    is_fake_mode = os.environ.get("STUDIO_FAKE_PROVIDERS") in ("1", "true", "True")
 
-        load_time = time.time() - t0
-        pipe_obj = getattr(engine, "pipe", None)
-        pipe_class_name = pipe_obj.__class__.__name__ if pipe_obj is not None else engine.__class__.__name__
-
-        engine_results: Dict[str, Any] = {
-            "engine_id": engine_id,
-            "pipeline_class": pipe_class_name,
-            "repo_id": cfg.get("repo_id"),
-            "revision": cfg.get("revision"),
-            "role": cfg.get("role"),
-            "load_time_sec": round(load_time, 2),
-            "resolutions": {},
-            "total_failures": 0,
-            "samples": [],
-        }
-        logger.info(
-            "Engine %s loaded successfully | Pipeline: %s | Revision: %s | Load time: %.2fs",
-            engine_id,
-            pipe_class_name,
-            cfg.get("revision"),
-            load_time,
-        )
-
-        # 2. Benchmark fixed resolutions across 5 prompts and seeds
-        is_video = (cfg.get("role") == "hero_clip" or engine_id in ("wan21_t2v_1_3b", "wan22_ti2v5b"))
-
-        if is_video:
-            # Video benchmark: 1 sample at 854x480 ~3 seconds
-            res_w, res_h = 854, 480
-            item = Item(
-                id=f"{engine_id}_clip_0",
-                engine=engine_id,
-                prompt=VIDEO_PROMPTS[0],
-                width=res_w,
-                height=res_h,
-                seed=SEEDS[0],
-                media_type="video",
-                duration_seconds=3.0,
-            )
-
-            # Reset peak VRAM counter before item generation
+    # If benchmarking multiple real engines, run each in a fresh subprocess to return RAM
+    if use_subprocess and len(target_engines) > 1 and not is_fake_mode:
+        for engine_id in target_engines:
+            logger.info("[SUBPROCESS ISOLATION] Benchmarking engine '%s' in a fresh process...", engine_id)
+            cmd = [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--single-engine",
+                engine_id,
+                "--out",
+                str(out_dir),
+            ]
             try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.reset_peak_memory_stats()
-            except Exception:
-                pass
+                subprocess.run(cmd, check=True)
+                part_file = out_dir / f"_bakeoff_{engine_id}.json"
+                if part_file.is_file():
+                    part_data = json.loads(part_file.read_text(encoding="utf-8"))
+                    bakeoff_results[engine_id] = part_data
+                    part_file.unlink()
+            except Exception as sub_err:
+                logger.error("Engine %s failed in subprocess: %s", engine_id, sub_err)
+    else:
+        # In-process execution (for single engine or mock/unit tests)
+        for engine_id in target_engines:
+            cfg = models_cfg.get(engine_id, {})
+            eng_res = benchmark_single_engine(engine_id, cfg, out_dir)
+            if eng_res:
+                bakeoff_results[engine_id] = eng_res
 
-            t_gen = time.time()
-            try:
-                out_path = engine.generate(item, out_dir)
-                dur = round(time.time() - t_gen, 2)
-
-                item_vram_mb = 0.0
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        item_vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
-                except Exception:
-                    pass
-
-                engine_results["samples"].append({
-                    "seed": SEEDS[0],
-                    "prompt": VIDEO_PROMPTS[0],
-                    "width": res_w,
-                    "height": res_h,
-                    "latency_sec": dur,
-                    "is_warmup": False,
-                    "peak_vram_mb": item_vram_mb,
-                    "media_type": "video",
-                    "file_path": str(out_path.name),
-                })
-                engine_results["resolutions"]["854x480"] = {
-                    "avg_seconds_per_item": dur,
-                    "median_seconds_per_item": dur,
-                    "warmup_seconds": dur,
-                    "samples_count": 1,
-                    "peak_vram_mb": item_vram_mb,
-                }
-            except Exception as e:
-                logger.error("Video clip generation failed on %s: %s", engine_id, e)
-                engine_results["total_failures"] += 1
-        else:
-            for w, h in RESOLUTIONS:
-                res_key = f"{w}x{h}"
-                latencies: List[float] = []
-                vram_measurements: List[float] = []
-
-                for idx in range(min(len(PROMPTS), 5)):
-                    p = PROMPTS[idx]
-                    s = SEEDS[idx]
-                    item = Item(
-                        id=f"{engine_id}_{w}x{h}_{idx}",
-                        engine=engine_id,
-                        prompt=p,
-                        width=w,
-                        height=h,
-                        seed=s,
-                        media_type="image",
-                    )
-
-                    # Reset peak VRAM counter before each individual item
-                    try:
-                        import torch
-                        if torch.cuda.is_available():
-                            torch.cuda.reset_peak_memory_stats()
-                    except Exception:
-                        pass
-
-                    t_gen = time.time()
-                    try:
-                        out_path = engine.generate(item, out_dir)
-                        dur = round(time.time() - t_gen, 2)
-
-                        item_vram_mb = 0.0
-                        try:
-                            import torch
-                            if torch.cuda.is_available():
-                                item_vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
-                        except Exception:
-                            pass
-
-                        latencies.append(dur)
-                        vram_measurements.append(item_vram_mb)
-                        is_warmup = (idx == 0)
-
-                        engine_results["samples"].append({
-                            "seed": s,
-                            "prompt": p,
-                            "width": w,
-                            "height": h,
-                            "latency_sec": dur,
-                            "is_warmup": is_warmup,
-                            "peak_vram_mb": item_vram_mb,
-                            "media_type": "image",
-                            "file_path": str(out_path.name),
-                        })
-                    except Exception as e:
-                        logger.error("Bakeoff sample generation failed on %s (%dx%d): %s", engine_id, w, h, e)
-                        engine_results["total_failures"] += 1
-
-                # Calculate average and median latency excluding the first warm-up item
-                if latencies:
-                    warmup_val = latencies[0]
-                    steady_latencies = latencies[1:] if len(latencies) > 1 else latencies
-                    avg_sec = round(statistics.mean(steady_latencies), 2)
-                    median_sec = round(statistics.median(steady_latencies), 2)
-                    peak_vram = max(vram_measurements) if vram_measurements else 0.0
-
-                    engine_results["resolutions"][res_key] = {
-                        "avg_seconds_per_item": avg_sec,
-                        "median_seconds_per_item": median_sec,
-                        "warmup_seconds": warmup_val,
-                        "samples_count": len(latencies),
-                        "peak_vram_mb": peak_vram,
-                    }
-
-        engine.unload()
-        del engine
-        clear_gpu_memory()
-
-        # Requirement 4: Do not write a stub entry for an engine that produced 0 samples
-        if engine_results["samples"]:
-            bakeoff_results[engine_id] = engine_results
-        else:
-            logger.info("Excluding engine '%s' from results: 0 successful samples were rendered.", engine_id)
-
-    # Save bakeoff.json
+    # Save final bakeoff.json
     json_path = out_dir / "bakeoff.json"
     json_path.write_text(json.dumps(bakeoff_results, indent=2), encoding="utf-8")
     logger.info("Saved bakeoff metrics to: %s", json_path)
@@ -380,10 +432,9 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
     generate_contact_sheet_html(bakeoff_results, out_dir / "contact_sheet.html")
 
     return bakeoff_results
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="yt-gpu-worker: Run model bakeoff benchmark suite")
+    parser.add_argument("--single-engine", type=str, default=None, help="Benchmark exactly one engine and save partial results for parent process")
     parser.add_argument("--engines", nargs="*", default=None, help="Specific engine IDs to benchmark (e.g. zimage_turbo sdxl_lightning)")
     parser.add_argument("--all", action="store_true", help="Benchmark all enabled models in models.yaml (excluding fake unless --include-fake)")
     parser.add_argument("--include-fake", action="store_true", help="Include fake mock engine in the run")
@@ -392,7 +443,7 @@ def main() -> None:
 
     out_dir = Path(args.out)
 
-    models_path = _REPO_ROOT / "models.yaml"
+    models_path = _REPO_ROOT / "worker" / "models.yaml"
     models_cfg = yaml.safe_load(models_path.read_text(encoding="utf-8")).get("models", {})
 
     engines_to_run = None
@@ -408,8 +459,16 @@ def main() -> None:
         else:
             engines_to_run = ["fake"]
 
+    if args.single_engine:
+        cfg = models_cfg.get(args.single_engine, {})
+        res = benchmark_single_engine(args.single_engine, cfg, out_dir)
+        if res:
+            part_path = out_dir / f"_bakeoff_{args.single_engine}.json"
+            part_path.write_text(json.dumps(res, indent=2), encoding="utf-8")
+        return
+
     logger.info("Executing bakeoff on engines: %s", engines_to_run)
-    run_bakeoff(output_dir=out_dir, engines_to_test=engines_to_run)
+    run_bakeoff(output_dir=out_dir, engines_to_test=engines_to_run, use_subprocess=True)
     print(f"\nBakeoff complete! Results saved to:")
     print(f"  JSON Metrics:  {(out_dir / 'bakeoff.json').resolve()}")
     print(f"  Contact Sheet: {(out_dir / 'contact_sheet.html').resolve()}\n")

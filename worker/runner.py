@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def _load_models_config() -> Dict[str, Any]:
-    """Load models.yaml from worker/models.yaml (single source of truth) or root."""
+    """Load models.yaml strictly from worker/models.yaml (single source of truth)."""
     p_worker = Path(__file__).resolve().parent / "models.yaml"
     if p_worker.is_file():
         try:
@@ -51,13 +51,6 @@ def _load_models_config() -> Dict[str, Any]:
             return data.get("models", {}) if isinstance(data, dict) else {}
         except Exception as e:
             logger.warning("Could not read worker/models.yaml: %s", e)
-    p_root = Path(__file__).resolve().parent.parent / "models.yaml"
-    if p_root.is_file():
-        try:
-            data = yaml.safe_load(p_root.read_text(encoding="utf-8"))
-            return data.get("models", {}) if isinstance(data, dict) else {}
-        except Exception as e:
-            logger.warning("Could not read root models.yaml: %s", e)
     return {}
 
 
@@ -95,6 +88,7 @@ class PackRunner:
         gpu_index: int = 0,
         allow_test_engines: bool = False,
         allow_noncommercial: bool = False,
+        allow_slow_bf16: bool = False,
     ) -> None:
         self.pack = pack
         self.output_dir = output_dir or Path(pack.output_dir)
@@ -104,6 +98,7 @@ class PackRunner:
         self.gpu_index = gpu_index
         self.allow_test_engines = allow_test_engines
         self.allow_noncommercial = allow_noncommercial
+        self.allow_slow_bf16 = allow_slow_bf16
         self.models_config = _load_models_config()
 
         self.start_time = time.time()
@@ -169,7 +164,9 @@ class PackRunner:
             cfg = self.models_config.get("wan21_t2v_1_3b", {})
         elif not cfg and engine_id == "wan21_t2v_1_3b":
             cfg = self.models_config.get("wan22_ti2v5b", {})
-        cfg = cfg or {}
+        cfg = dict(cfg or {})
+        if self.allow_slow_bf16:
+            cfg["allow_slow_bf16"] = True
 
         # Refuse test_only and commercial_ok=false engines unless explicitly permitted
         is_test_mode = (
@@ -377,6 +374,7 @@ def run_pack(
     gpu_indices: Optional[List[int]] = None,
     allow_test_engines: bool = False,
     allow_noncommercial: bool = False,
+    allow_slow_bf16: bool = False,
 ) -> List[Result]:
     """Top-level entrypoint to execute a Pack.
     
@@ -393,14 +391,41 @@ def run_pack(
             gpu_index=available_indices[0],
             allow_test_engines=allow_test_engines,
             allow_noncommercial=allow_noncommercial,
+            allow_slow_bf16=allow_slow_bf16,
         )
         return runner.run()
 
-    # Multi-GPU round-robin partition
-    logger.info("Distributing %d items across %d GPUs: %s", len(pack.items), len(available_indices), available_indices)
-    partitions: Dict[int, List[Item]] = {gpu_idx: [] for gpu_idx in available_indices}
+    # Enforce Host RAM guard: limit active worker processes so total required RAM fits in host RAM
+    from worker.memory import get_host_ram_info
+    ram_info = get_host_ram_info()
+    models_cfg = _load_models_config()
+    max_engine_ram = 12.0
+    for it in pack.items:
+        cfg = models_cfg.get(it.engine, {})
+        est = float(cfg.get("ram_estimate_gb", 12.0))
+        if est > max_engine_ram:
+            max_engine_ram = est
+
+    safe_host_ram = ram_info.available_ram_gb * 0.85
+    max_workers_for_ram = max(1, int(safe_host_ram // max_engine_ram)) if max_engine_ram > 0 else len(available_indices)
+    allowed_workers = min(len(available_indices), max_workers_for_ram)
+
+    if allowed_workers < len(available_indices):
+        logger.info(
+            "[HOST RAM WORKER GUARD] Limiting concurrent worker processes from %d to %d "
+            "(available RAM: %.1f GB, safe threshold: %.1f GB, max engine RAM estimate: %.1f GB)",
+            len(available_indices),
+            allowed_workers,
+            ram_info.available_ram_gb,
+            safe_host_ram,
+            max_engine_ram,
+        )
+
+    active_indices = available_indices[:allowed_workers]
+    logger.info("Distributing %d items across %d active GPUs: %s", len(pack.items), len(active_indices), active_indices)
+    partitions: Dict[int, List[Item]] = {gpu_idx: [] for gpu_idx in active_indices}
     for idx, item in enumerate(pack.items):
-        target_gpu = available_indices[idx % len(available_indices)]
+        target_gpu = active_indices[idx % len(active_indices)]
         partitions[target_gpu].append(item)
 
     # In multi-GPU child process wrapper:
@@ -422,6 +447,7 @@ def run_pack(
             gpu_index=gpu_idx,
             allow_test_engines=allow_test_engines,
             allow_noncommercial=allow_noncommercial,
+            allow_slow_bf16=allow_slow_bf16,
         )
         res = runner.run()
         all_results.extend(res)
@@ -441,6 +467,7 @@ if __name__ == "__main__":
     parser.add_argument("--gpus", type=int, nargs="*", default=None, help="GPU device indices to use")
     parser.add_argument("--test", action="store_true", help="Allow test_only mock engines (e.g. fake)")
     parser.add_argument("--allow-noncommercial", action="store_true", help="Allow engines with commercial_ok: false (e.g. sdxl_turbo)")
+    parser.add_argument("--allow-slow-bf16", action="store_true", help="Allow software bf16 emulation on compute capability < 8.0 GPUs")
 
     args = parser.parse_args()
 
@@ -464,7 +491,8 @@ if __name__ == "__main__":
     target_out = Path(args.out)
     target_out.mkdir(parents=True, exist_ok=True)
 
-    results = run_pack(loaded_pack, output_dir=target_out, gpu_indices=args.gpus, allow_test_engines=args.test, allow_noncommercial=args.allow_noncommercial)
+    results = run_pack(loaded_pack, output_dir=target_out, gpu_indices=args.gpus, allow_test_engines=args.test, allow_noncommercial=args.allow_noncommercial,
+        allow_slow_bf16=args.allow_slow_bf16)
     print(f"\nExecution complete! Rendered {len(results)} items into {target_out.resolve()}:")
     for r in results:
         status_symbol = "[OK]" if r.status in ("success", "skipped") else "[FAILED]"

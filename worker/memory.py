@@ -1,18 +1,22 @@
-"""worker/memory.py — Hardware detection, VRAM budgeting, and OOM recovery logic.
+"""worker/memory.py ? Hardware detection, VRAM/RAM budgeting, and OOM recovery logic.
 
 Rules:
 - Tesla T4 (CC 7.5) and Tesla P100 (CC 6.0) must use fp16 ONLY (never bf16).
 - Ampere / Ada / Hopper (CC >= 8.0) support native bfloat16.
+- Host RAM Guard: Reads cgroups limit or /proc/meminfo; refuses loading when
+  engine ram_estimate_gb exceeds 85% of available host RAM.
 - Graceful OOM retry downscales resolution or enables offloading; never crashes the run.
 - Aggressively clears GPU and CPU RAM (via malloc_trim) between models.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import gc
 import logging
 import os
 from pathlib import Path
+import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
@@ -21,6 +25,140 @@ except ImportError:
     psutil = None
 
 logger = logging.getLogger(__name__)
+
+
+class InsufficientRAMError(RuntimeError):
+    """Raised when estimated model RAM exceeds 85% of available host RAM."""
+
+    def __init__(self, engine_id: str, required_gb: float, available_gb: float, threshold_gb: float) -> None:
+        super().__init__(
+            f"Engine '{engine_id}' estimated RAM requirement ({required_gb:.1f} GB) "
+            f"exceeds 85% of available host RAM ({threshold_gb:.1f} GB of {available_gb:.1f} GB free). "
+            f"Refusing to load to prevent host-RAM exhaustion and kernel OOM kills."
+        )
+        self.engine_id = engine_id
+        self.required_gb = required_gb
+        self.available_gb = available_gb
+        self.threshold_gb = threshold_gb
+
+
+@dataclass
+class HostRAMInfo:
+    """Host RAM status in Gigabytes."""
+    total_ram_gb: float
+    available_ram_gb: float
+    used_ram_gb: float
+
+    def __repr__(self) -> str:
+        return f"HostRAM(used={self.used_ram_gb:.2f}GB, avail={self.available_ram_gb:.2f}GB, total={self.total_ram_gb:.2f}GB)"
+
+
+def get_host_ram_info() -> HostRAMInfo:
+    """Read host RAM limit and available capacity from Linux cgroups, /proc/meminfo, or psutil."""
+    total_bytes: Optional[int] = None
+    available_bytes: Optional[int] = None
+    used_bytes: Optional[int] = None
+
+    # 1. Inspect Linux cgroups v2 memory limits (container / Kaggle / Docker)
+    cgroup2_max = Path("/sys/fs/cgroup/memory.max")
+    if cgroup2_max.is_file():
+        try:
+            val = cgroup2_max.read_text().strip()
+            if val != "max" and val.isdigit():
+                total_bytes = int(val)
+        except Exception:
+            pass
+
+    # 2. Inspect Linux cgroups v1 memory limits
+    if total_bytes is None:
+        cgroup1_limit = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        if cgroup1_limit.is_file():
+            try:
+                val = int(cgroup1_limit.read_text().strip())
+                # If unconstrained, it reports ~2^63 - 4096
+                if val < (1 << 60):
+                    total_bytes = val
+            except Exception:
+                pass
+
+    # Check cgroup current usage
+    cgroup_current = Path("/sys/fs/cgroup/memory.current")
+    if not cgroup_current.is_file():
+        cgroup_current = Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+    if cgroup_current.is_file():
+        try:
+            used_bytes = int(cgroup_current.read_text().strip())
+        except Exception:
+            pass
+
+    # 3. Read /proc/meminfo on Linux for system-wide available memory
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        try:
+            mem_data = {}
+            for line in meminfo.read_text().splitlines():
+                parts = line.split(":")
+                if len(parts) == 2:
+                    k, v = parts[0].strip(), parts[1].strip().split()[0]
+                    if v.isdigit():
+                        mem_data[k] = int(v) * 1024  # convert kB to bytes
+
+            if "MemTotal" in mem_data and total_bytes is None:
+                total_bytes = mem_data["MemTotal"]
+            if "MemAvailable" in mem_data:
+                available_bytes = mem_data["MemAvailable"]
+        except Exception:
+            pass
+
+    # 4. Fallback to psutil (cross-platform Windows / Linux / macOS)
+    if psutil is not None:
+        try:
+            vm = psutil.virtual_memory()
+            if total_bytes is None:
+                total_bytes = vm.total
+            if available_bytes is None:
+                available_bytes = vm.available
+            if used_bytes is None:
+                used_bytes = vm.used
+        except Exception:
+            pass
+
+    # Fallback defaults if all else fails
+    if total_bytes is None:
+        total_bytes = 16 * 1024 * 1024 * 1024
+    if used_bytes is None:
+        used_bytes = 4 * 1024 * 1024 * 1024
+    if available_bytes is None:
+        available_bytes = max(0, total_bytes - used_bytes)
+
+    gb = 1024.0 * 1024.0 * 1024.0
+    return HostRAMInfo(
+        total_ram_gb=round(total_bytes / gb, 2),
+        available_ram_gb=round(available_bytes / gb, 2),
+        used_ram_gb=round(used_bytes / gb, 2),
+    )
+
+
+def log_host_ram_stage(stage_name: str) -> None:
+    """Log used and available host RAM at given load/execution stage."""
+    ram = get_host_ram_info()
+    logger.info(
+        "[HOST RAM %s] Used: %.2f GB | Available: %.2f GB / Total: %.2f GB",
+        stage_name,
+        ram.used_ram_gb,
+        ram.available_ram_gb,
+        ram.total_ram_gb,
+    )
+
+
+def check_host_ram_guard(engine_id: str, ram_estimate_gb: float, safety_ratio: float = 0.85) -> None:
+    """Verify available host RAM is sufficient before allocating or offloading model weights."""
+    ram = get_host_ram_info()
+    threshold = ram.available_ram_gb * safety_ratio
+    log_host_ram_stage(f"pre-load guard check for '{engine_id}' (requires ~{ram_estimate_gb:.1f} GB)")
+
+    if ram_estimate_gb > threshold:
+        raise InsufficientRAMError(engine_id, ram_estimate_gb, ram.available_ram_gb, threshold)
 
 
 class GPUInfo:
@@ -99,14 +237,8 @@ def detect_gpus() -> List[GPUInfo]:
 
 def get_system_ram_mb() -> Tuple[float, float]:
     """Return (total_ram_mb, available_ram_mb) for the host machine."""
-    if psutil is not None:
-        try:
-            mem = psutil.virtual_memory()
-            return mem.total / (1024 * 1024), mem.available / (1024 * 1024)
-        except Exception:
-            pass
-    # Fallback default values
-    return 16384.0, 8192.0
+    ram = get_host_ram_info()
+    return ram.total_ram_gb * 1024.0, ram.available_ram_gb * 1024.0
 
 
 def clear_gpu_memory() -> None:

@@ -160,13 +160,18 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert "sdxl_lightning" in models
     assert "fake" in models
 
-    # 1. zimage_turbo checks (Tongyi-MAI Apache-2.0)
+    # 1. zimage_turbo checks (Tongyi-MAI Apache-2.0, disabled on T4)
     z = models["zimage_turbo"]
     assert z["role"] == "default_image"
     assert z["default_steps"] == 9
     assert z["default_guidance_scale"] == 0.0
-    assert z["seconds_per_item"] == 8.5
-    assert z["load_seconds"] == 38.0
+    assert z["seconds_per_item"] is None
+    assert z["load_seconds"] is None
+    assert z["peak_vram_gb"] is None
+    assert z["enabled"] is False
+    assert z["min_compute_capability"] == 8.0 or z["min_compute_capability"] == [8, 0]
+    assert z["requires_native_bf16"] is True
+    assert z["ram_estimate_gb"] == 16.0
     assert z["repo_id"] == "Tongyi-MAI/Z-Image-Turbo"
     assert z["revision"] == "f332072aa78be7aecdf3ee76d5c247082da564a6"
     assert z["license"] == "Apache-2.0"
@@ -214,14 +219,15 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert w5["enabled"] is False
     assert w5["min_vram_gb"] == 20.0
 
-    # 4. sdxl_lightning checks
+    # 4. sdxl_lightning checks (enabled with true UNet loading)
     s = models["sdxl_lightning"]
     assert s["role"] == "fallback"
-    assert s["enabled"] is False
-    assert "smeared" in s["notes"].lower()
+    assert s["enabled"] is True
+    assert s["ram_estimate_gb"] == 12.0
     assert s["repo_id"] == "ByteDance/SDXL-Lightning"
     assert s["revision"] == "c9a24f48e1c025556787b0c58dd67a091ece2e44"
     assert s["license"] == "openrail++"
+    assert s["commercial_ok"] is True
 
     # 5. fake mock checks
     fk = models["fake"]
@@ -295,3 +301,150 @@ def test_bakeoff_records_pipeline_class_and_revision(tmp_path: Path) -> None:
         assert "prompt" in zt["samples"][0]
         assert "peak_vram_mb" in zt["samples"][0]
         assert "median_seconds_per_item" in zt["resolutions"]["768x768"]
+
+def test_zimage_turbo_capability_gating_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify ZImageTurboEngine refuses compute capability < 8.0 GPUs before loading weights."""
+    from worker.engines.base import UnsupportedGPUError
+    from worker.engines.zimage_turbo import ZImageTurboEngine
+    from worker.memory import GPUInfo, HostRAMInfo
+
+    # Mock generous RAM so RAM guard passes during capability testing
+    mock_ram = HostRAMInfo(total_ram_gb=64.0, available_ram_gb=50.0, used_ram_gb=14.0)
+    monkeypatch.setattr("worker.memory.get_host_ram_info", lambda: mock_ram)
+
+    # Mock Tesla T4 (CC 7.5, below 8.0 requirement)
+    t4_gpu = GPUInfo(index=0, name="Tesla T4", total_vram_mb=15109, free_vram_mb=14000, compute_capability=(7, 5))
+    monkeypatch.setattr("worker.engines.zimage_turbo.detect_gpus", lambda: [t4_gpu])
+    monkeypatch.delenv("STUDIO_ALLOW_SLOW_BF16", raising=False)
+
+    engine = ZImageTurboEngine(config={"min_compute_capability": (8, 0), "requires_native_bf16": True})
+
+    # Case 1: Refused on CC 7.5 without allow_slow_bf16
+    with pytest.raises(UnsupportedGPUError, match="requires GPU compute capability >= 8.0"):
+        engine.load(device="cuda:0")
+
+    # Case 2: Overridden when allow_slow_bf16 is True
+    engine_override = ZImageTurboEngine(config={"min_compute_capability": (8, 0), "requires_native_bf16": True, "allow_slow_bf16": True})
+    try:
+        engine_override.load(device="cuda:0")
+    except UnsupportedGPUError:
+        pytest.fail("UnsupportedGPUError should not be raised when allow_slow_bf16=True")
+    except Exception:
+        # Expected on CPU test environment when diffusers/weights not present
+        pass
+
+
+def test_degenerate_output_error_raised_on_nan_or_black_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify DegenerateOutputError is raised on black/NaN images so item fails cleanly."""
+    import sys
+    from unittest.mock import MagicMock
+    from PIL import Image
+    from worker.engines.base import DegenerateOutputError
+    from worker.engines.zimage_turbo import ZImageTurboEngine
+    from worker.schema import Item
+
+    # Mock torch module if not installed in CPU environment
+    mock_torch = MagicMock()
+    mock_torch.Generator.return_value.manual_seed.return_value = MagicMock()
+    monkeypatch.setitem(sys.modules, "torch", mock_torch)
+
+    engine = ZImageTurboEngine()
+    engine.is_loaded = True
+    engine.device = "cpu"
+
+    # Mock pipeline returning pure black image
+    mock_pipe = MagicMock()
+    black_img = Image.new("RGB", (64, 64), (0, 0, 0))
+    res_obj = MagicMock()
+    res_obj.images = [black_img]
+    mock_pipe.return_value = res_obj
+    engine.pipe = mock_pipe
+
+    item = Item(id="test_degenerate", engine="zimage_turbo", prompt="test", width=64, height=64)
+
+    with pytest.raises(DegenerateOutputError, match="produced NaN or pure black output"):
+        engine.generate(item, tmp_path)
+
+
+def test_apply_pipeline_optimizations_is_idempotent() -> None:
+    """Verify apply_pipeline_optimizations does not reinstall hooks or duplicate wrappers."""
+    from unittest.mock import MagicMock
+    from worker.engines.base import safe_apply_gpu_optimizations
+
+    mock_pipe = MagicMock()
+    mock_pipe._gpu_optimizations_applied = False
+    mock_pipe.enable_model_cpu_offload = MagicMock()
+    mock_pipe.enable_vae_tiling = MagicMock()
+    mock_pipe.enable_vae_slicing = MagicMock()
+
+    # Call 1: Hooks installed
+    safe_apply_gpu_optimizations(mock_pipe, target_device="cuda:0", gpu_id=0)
+    assert mock_pipe.enable_model_cpu_offload.call_count == 1
+    assert getattr(mock_pipe, "_gpu_optimizations_applied", False) is True
+
+    # Call 2: Must be a no-op (idempotent)
+    safe_apply_gpu_optimizations(mock_pipe, target_device="cuda:0", gpu_id=0)
+    assert mock_pipe.enable_model_cpu_offload.call_count == 1
+
+    # Call 3: Still no-op
+    safe_apply_gpu_optimizations(mock_pipe, target_device="cuda:0", gpu_id=0)
+    assert mock_pipe.enable_model_cpu_offload.call_count == 1
+
+
+def test_sdxl_lightning_weights_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify SDXLLightningEngine builds UNet and loads ByteDance safetensors weights."""
+    import sys
+    from unittest.mock import MagicMock
+    from worker.engines.sdxl_lightning import SDXLLightningEngine
+
+    mock_torch = MagicMock()
+    mock_torch.cuda.is_available.return_value = False
+    mock_torch.float16 = "fp16"
+
+    mock_unet = MagicMock()
+    mock_unet_cls = MagicMock()
+    mock_unet_cls.from_config.return_value.to.return_value = mock_unet
+
+    mock_pipe = MagicMock()
+    mock_pipe_cls = MagicMock()
+    mock_pipe_cls.from_pretrained.return_value = mock_pipe
+
+    mock_scheduler_cls = MagicMock()
+
+    # Mock modules in sys.modules
+    mock_diffusers = MagicMock()
+    mock_diffusers.UNet2DConditionModel = mock_unet_cls
+    mock_diffusers.StableDiffusionXLPipeline = mock_pipe_cls
+    mock_diffusers.EulerDiscreteScheduler = mock_scheduler_cls
+
+    mock_hf = MagicMock()
+    mock_hf.hf_hub_download.return_value = "fake_path/sdxl_lightning_4step_unet.safetensors"
+
+    mock_safetensors = MagicMock()
+    mock_safetensors.torch.load_file.return_value = {"unet_weight": "tensor_mock"}
+
+    from worker.memory import HostRAMInfo
+    mock_ram = HostRAMInfo(total_ram_gb=64.0, available_ram_gb=50.0, used_ram_gb=14.0)
+    monkeypatch.setattr("worker.memory.get_host_ram_info", lambda: mock_ram)
+
+    monkeypatch.setitem(sys.modules, "torch", mock_torch)
+    monkeypatch.setitem(sys.modules, "diffusers", mock_diffusers)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", mock_hf)
+    monkeypatch.setitem(sys.modules, "safetensors", mock_safetensors)
+    monkeypatch.setitem(sys.modules, "safetensors.torch", mock_safetensors.torch)
+
+    engine = SDXLLightningEngine(config={
+        "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+        "repo_id": "ByteDance/SDXL-Lightning",
+        "files": ["sdxl_lightning_4step_unet.safetensors"],
+        "recommended_dtype": "fp16",
+    })
+
+    engine.load(device="cpu")
+
+    # Assert UNet was loaded with the ByteDance safetensors state dict
+    assert mock_hf.hf_hub_download.call_count == 1
+    assert mock_unet.load_state_dict.call_count == 1
+    mock_unet.load_state_dict.assert_called_with({"unet_weight": "tensor_mock"})
+    assert engine.lightning_weights_loaded is True
+    assert mock_scheduler_cls.from_config.call_count == 1

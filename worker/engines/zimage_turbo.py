@@ -1,20 +1,27 @@
 """worker/engines/zimage_turbo.py ? Tongyi-MAI Z-Image-Turbo 9-step DiT engine driven by models.yaml.
 
-Features:
-- Reads repo_id, revision, dtype, steps, and guidance from models.yaml.
-- fp16 on Tesla T4 and P100; bf16 only where supported by GPU hardware.
-- Guard against NaN or black output with automatic VAE float32 upcast and offload fallback.
+Rules:
+- Requires native bfloat16 (GPU compute capability >= 8.0).
+- Raises UnsupportedGPUError before loading weights if CC < 8.0 unless --allow-slow-bf16 is passed.
+- Enforces host-RAM guard before loading.
+- Raises DegenerateOutputError on NaN / black output without running memory-exploding recovery loops.
 - No hardcoded Hugging Face repo IDs in code.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from worker.engines.base import Engine
-from worker.memory import clear_gpu_memory, detect_gpus, get_recommended_torch_dtype
+from worker.engines.base import DegenerateOutputError, Engine, UnsupportedGPUError
+from worker.memory import (
+    clear_gpu_memory,
+    detect_gpus,
+    get_recommended_torch_dtype,
+    log_host_ram_stage,
+)
 from worker.schema import Item
 
 logger = logging.getLogger(__name__)
@@ -28,7 +35,7 @@ def _is_black_or_degenerate_image(image: Any) -> bool:
         if isinstance(extrema, tuple):
             if all(ch[1] == 0 for ch in extrema):
                 return True
-            # Also check if image has 0 dynamic range across all channels
+            # Check if all channels have 0 dynamic range
             if all(ch[0] == ch[1] for ch in extrema):
                 return True
     except Exception as exc:
@@ -43,6 +50,35 @@ class ZImageTurboEngine(Engine):
     min_vram_gb: float = 8.0
 
     def load(self, device: Optional[str] = None, dtype: Optional[Any] = None) -> None:
+        gpus = detect_gpus()
+        target_device = device or ("cuda" if (gpus and os.environ.get("CUDA_VISIBLE_DEVICES") != "-1") else "cpu")
+
+        # 1. Compute capability gating: CC >= 8.0 required for native bf16 before loading
+        allow_slow_bf16 = (
+            self.config.get("allow_slow_bf16", False)
+            or os.environ.get("STUDIO_ALLOW_SLOW_BF16") in ("1", "true", "True")
+        )
+
+        if gpus and target_device.startswith("cuda"):
+            gpu = gpus[0]
+            if gpu.compute_capability < self.min_compute_capability:
+                if not allow_slow_bf16:
+                    raise UnsupportedGPUError(
+                        f"Engine '{self.engine_id}' requires GPU compute capability >= "
+                        f"{self.min_compute_capability[0]}.{self.min_compute_capability[1]} with native bfloat16 support "
+                        f"(detected '{gpu.name}' with compute capability {gpu.compute_capability[0]}.{gpu.compute_capability[1]}). "
+                        f"Running in fp16 produces NaN/black output. "
+                        f"Pass --allow-slow-bf16 or set STUDIO_ALLOW_SLOW_BF16=1 to force software bf16 emulation with offload and RAM guard."
+                    )
+                else:
+                    logger.warning(
+                        "[SLOW BF16 OVERRIDE] Running %s on %s (CC %d.%d) with software bfloat16 emulation and offload.",
+                        self.engine_id, gpu.name, gpu.compute_major, gpu.compute_minor,
+                    )
+
+        # 2. Enforce Host RAM guard before allocating any weights
+        self.check_ram_guard()
+
         try:
             import torch
         except ImportError as e:
@@ -68,21 +104,14 @@ class ZImageTurboEngine(Engine):
             raise ValueError(f"Engine '{self.engine_id}' has no repo_id configured in models.yaml.")
         revision = self.revision or self.config.get("revision")
 
-        gpus = detect_gpus()
-        target_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Determine target dtype: fp16 on T4/P100, bf16 only where hardware supports it
+        # Determine target dtype: native bf16 on CC>=8.0, software bf16 if overridden, else recommended
         if dtype is not None:
             target_dtype = dtype
+        elif allow_slow_bf16:
+            target_dtype = torch.bfloat16
         else:
             rec = get_recommended_torch_dtype(gpus[0] if gpus else None)
-            # If recommended is bf16 and hardware supports it, use bfloat16; otherwise fp16
-            if rec == torch.bfloat16:
-                target_dtype = torch.bfloat16
-            elif target_device.startswith("cuda"):
-                target_dtype = torch.float16
-            else:
-                target_dtype = torch.float32
+            target_dtype = rec if rec == torch.bfloat16 else (torch.float16 if target_device.startswith("cuda") else torch.float32)
 
         logger.info(
             "Loading Z-Image-Turbo from %s (rev: %s, dtype: %s, device: %s)...",
@@ -93,6 +122,7 @@ class ZImageTurboEngine(Engine):
         )
 
         clear_gpu_memory()
+        log_host_ram_stage(f"pre-load of {self.engine_id}")
 
         try:
             self.pipe = pipe_cls.from_pretrained(
@@ -119,6 +149,7 @@ class ZImageTurboEngine(Engine):
             gpu_id = int(target_device.split(":")[1])
 
         self.apply_pipeline_optimizations(target_device, gpu_id=gpu_id)
+        log_host_ram_stage(f"post-load of {self.engine_id}")
 
         self.device = target_device
         self.dtype = target_dtype
@@ -136,7 +167,6 @@ class ZImageTurboEngine(Engine):
                 generator=generator,
             ).images[0]
         except TypeError:
-            # Some diffusers pipeline variants take prompt without guidance_scale if distilled
             return self.pipe(
                 prompt=prompt,
                 width=width,
@@ -168,37 +198,15 @@ class ZImageTurboEngine(Engine):
         w = ((item.width // 16) * 16) if item.width else 1024
         h = ((item.height // 16) * 16) if item.height else 1024
 
-        # Primary inference attempt
+        # Primary inference execution
         image = self._execute_inference(item.prompt, w, h, steps, guidance, generator)
 
-        # Guard against NaN or all-black output (common in float16 numerical instability)
+        # NaN / Black output check: raise DegenerateOutputError without host-RAM bloating recovery loops
         if _is_black_or_degenerate_image(image):
-            logger.warning(
-                "[DEGENERATE OUTPUT GUARD] Detected NaN or black image with %s in fp16. "
-                "Initiating recovery: upcasting VAE to float32...",
-                self.engine_id,
+            raise DegenerateOutputError(
+                f"Engine '{self.engine_id}' produced NaN or pure black output. "
+                f"This indicates numerical instability in fp16 on compute capability < 8.0 hardware."
             )
-            try:
-                if hasattr(self.pipe, "vae") and self.pipe.vae is not None:
-                    self.pipe.vae.to(dtype=torch.float32)
-
-                # Reset seed and regenerate
-                if item.seed is not None:
-                    try:
-                        generator = torch.Generator(device=self.device).manual_seed(item.seed)
-                    except Exception:
-                        generator = torch.Generator(device="cpu").manual_seed(item.seed)
-
-                image = self._execute_inference(item.prompt, w, h, steps, guidance, generator)
-                if not _is_black_or_degenerate_image(image):
-                    logger.info("[RECOVERY SUCCESS] Regenerated clean image after VAE float32 upcast.")
-                else:
-                    logger.warning("[RECOVERY PARTIAL] Output still degenerate. Enabling CPU offload fallback...")
-                    if hasattr(self.pipe, "enable_model_cpu_offload"):
-                        self.pipe.enable_model_cpu_offload()
-                    image = self._execute_inference(item.prompt, w, h, steps, guidance, generator)
-            except Exception as rec_err:
-                logger.error("Black/NaN image recovery attempt failed: %s", rec_err)
 
         image.save(target_file, format="PNG")
         return target_file

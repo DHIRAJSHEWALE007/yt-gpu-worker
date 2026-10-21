@@ -1,0 +1,9 @@
+# GPU inference requirements for yt-gpu-worker
+# Note: PyTorch is provided by the base environment (Kaggle/Colab with CUDA 12/13). Never pin torch here.
+# Tested with diffusers==0.33.0 / diffusers>=0.33.0 for Wan 2.1 video and FLUX.2 Klein pipelines.
+diffusers>=0.33.0
+transformers>=4.48.0
+accelerate>=1.2.0
+bitsandbytes>=0.45.0
+safetensors>=0.4.5
+huggingface_hub>=0.28.0

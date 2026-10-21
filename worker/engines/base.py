@@ -1,10 +1,10 @@
 """worker/engines/base.py ? Abstract Base Class for diffusers inference engines.
 
 Enforces:
-- diffusers pipeline optimizations (VAE tiling, text-encoder CPU offload).
+- diffusers pipeline optimizations (VAE tiling, text-encoder CPU offload) idempotently.
 - fp16 on Tesla T4 and P100 (never bf16).
-- Clear error when GPU VRAM is insufficient.
-- Configuration loaded from models.yaml as single source of truth.
+- Clear error when GPU VRAM or host RAM is insufficient.
+- Configuration loaded from worker/models.yaml as single source of truth.
 """
 
 from __future__ import annotations
@@ -12,74 +12,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from worker.memory import clear_gpu_memory, detect_gpus, get_recommended_torch_dtype
+from worker.memory import (
+    check_host_ram_guard,
+    clear_gpu_memory,
+    detect_gpus,
+    get_recommended_torch_dtype,
+    log_host_ram_stage,
+)
 from worker.schema import Item
 
 logger = logging.getLogger(__name__)
-
-
-def safe_enable_vae_tiling(pipe: Any) -> bool:
-    """Safely enable VAE tiling across various diffusers versions and architectures."""
-    try:
-        if hasattr(pipe, "enable_vae_tiling") and callable(getattr(pipe, "enable_vae_tiling")):
-            pipe.enable_vae_tiling()
-            return True
-        if hasattr(pipe, "vae") and pipe.vae is not None:
-            if hasattr(pipe.vae, "enable_tiling") and callable(getattr(pipe.vae, "enable_tiling")):
-                pipe.vae.enable_tiling()
-                return True
-            if hasattr(pipe.vae, "enable_vae_tiling") and callable(getattr(pipe.vae, "enable_vae_tiling")):
-                pipe.vae.enable_vae_tiling()
-                return True
-    except Exception as exc:
-        logger.warning("Could not enable VAE tiling: %s", exc)
-    return False
-
-
-def safe_enable_vae_slicing(pipe: Any) -> bool:
-    """Safely enable VAE slicing across various diffusers versions and architectures."""
-    try:
-        if hasattr(pipe, "enable_vae_slicing") and callable(getattr(pipe, "enable_vae_slicing")):
-            pipe.enable_vae_slicing()
-            return True
-        if hasattr(pipe, "vae") and pipe.vae is not None:
-            if hasattr(pipe.vae, "enable_slicing") and callable(getattr(pipe.vae, "enable_slicing")):
-                pipe.vae.enable_slicing()
-                return True
-            if hasattr(pipe.vae, "enable_vae_slicing") and callable(getattr(pipe.vae, "enable_vae_slicing")):
-                pipe.vae.enable_vae_slicing()
-                return True
-    except Exception as exc:
-        logger.warning("Could not enable VAE slicing: %s", exc)
-    return False
-
-
-def safe_apply_gpu_optimizations(pipe: Any, target_device: str = "cuda", gpu_id: int = 0) -> None:
-    """Apply VAE tiling, slicing, and CPU offload or to(device) safely without crashing."""
-    if target_device.startswith("cuda"):
-        safe_enable_vae_tiling(pipe)
-        safe_enable_vae_slicing(pipe)
-        try:
-            if hasattr(pipe, "enable_model_cpu_offload") and callable(getattr(pipe, "enable_model_cpu_offload")):
-                try:
-                    pipe.enable_model_cpu_offload(gpu_id=gpu_id)
-                except TypeError:
-                    pipe.enable_model_cpu_offload()
-            else:
-                pipe.to(target_device)
-        except Exception as exc:
-            logger.warning("enable_model_cpu_offload failed (%s); moving directly to %s", exc, target_device)
-            try:
-                pipe.to(target_device)
-            except Exception as to_exc:
-                logger.warning("pipe.to(%s) failed: %s", target_device, to_exc)
-    else:
-        try:
-            pipe.to("cpu")
-        except Exception as exc:
-            logger.warning("pipe.to('cpu') failed: %s", exc)
 
 
 class InsufficientVRAMError(RuntimeError):
@@ -95,6 +39,107 @@ class InsufficientVRAMError(RuntimeError):
         self.available_gb = available_gb
 
 
+class UnsupportedGPUError(RuntimeError):
+    """Raised when GPU hardware does not satisfy model architecture requirements (e.g. CC < 8.0)."""
+
+
+class DegenerateOutputError(RuntimeError):
+    """Raised when image or video asset generation produces NaN, Inf, or pure black output."""
+
+
+def safe_enable_vae_tiling(pipe: Any) -> bool:
+    """Safely enable VAE tiling across various diffusers versions and architectures."""
+    try:
+        if getattr(pipe, "_vae_tiling_enabled", False):
+            return True
+        if hasattr(pipe, "enable_vae_tiling") and callable(getattr(pipe, "enable_vae_tiling")):
+            pipe.enable_vae_tiling()
+            pipe._vae_tiling_enabled = True
+            return True
+        if hasattr(pipe, "vae") and pipe.vae is not None:
+            if hasattr(pipe.vae, "enable_tiling") and callable(getattr(pipe.vae, "enable_tiling")):
+                pipe.vae.enable_tiling()
+                pipe._vae_tiling_enabled = True
+                return True
+            if hasattr(pipe.vae, "enable_vae_tiling") and callable(getattr(pipe.vae, "enable_vae_tiling")):
+                pipe.vae.enable_vae_tiling()
+                pipe._vae_tiling_enabled = True
+                return True
+    except Exception as exc:
+        logger.warning("Could not enable VAE tiling: %s", exc)
+    return False
+
+
+def safe_enable_vae_slicing(pipe: Any) -> bool:
+    """Safely enable VAE slicing across various diffusers versions and architectures."""
+    try:
+        if getattr(pipe, "_vae_slicing_enabled", False):
+            return True
+        if hasattr(pipe, "enable_vae_slicing") and callable(getattr(pipe, "enable_vae_slicing")):
+            pipe.enable_vae_slicing()
+            pipe._vae_slicing_enabled = True
+            return True
+        if hasattr(pipe, "vae") and pipe.vae is not None:
+            if hasattr(pipe.vae, "enable_slicing") and callable(getattr(pipe.vae, "enable_slicing")):
+                pipe.vae.enable_slicing()
+                pipe._vae_slicing_enabled = True
+                return True
+            if hasattr(pipe.vae, "enable_vae_slicing") and callable(getattr(pipe.vae, "enable_vae_slicing")):
+                pipe.vae.enable_vae_slicing()
+                pipe._vae_slicing_enabled = True
+                return True
+    except Exception as exc:
+        logger.warning("Could not enable VAE slicing: %s", exc)
+    return False
+
+
+def safe_apply_gpu_optimizations(pipe: Any, target_device: str = "cuda", gpu_id: int = 0) -> None:
+    """Apply VAE tiling, slicing, and CPU offload idempotently without duplicating hooks."""
+    if pipe is None:
+        return
+
+    # Idempotency guard: never apply twice to avoid Accelerate hook duplication & RAM explosion
+    if getattr(pipe, "_gpu_optimizations_applied", False):
+        logger.debug("safe_apply_gpu_optimizations already applied to pipeline; skipping duplicate application.")
+        return
+
+    if target_device.startswith("cuda"):
+        safe_enable_vae_tiling(pipe)
+        safe_enable_vae_slicing(pipe)
+
+        # Check if offload hooks already installed or device map managed
+        already_offloaded = (
+            getattr(pipe, "_offload_hook_installed", False) is True
+            or getattr(pipe, "is_model_cpu_offload", False) is True
+            or (isinstance(getattr(pipe, "hf_device_map", None), dict) and bool(pipe.hf_device_map))
+        )
+
+        if not already_offloaded:
+            try:
+                if hasattr(pipe, "enable_model_cpu_offload") and callable(getattr(pipe, "enable_model_cpu_offload")):
+                    try:
+                        pipe.enable_model_cpu_offload(gpu_id=gpu_id)
+                    except TypeError:
+                        pipe.enable_model_cpu_offload()
+                    pipe._offload_hook_installed = True
+                    log_host_ram_stage(f"after enable_model_cpu_offload(gpu_id={gpu_id})")
+                else:
+                    pipe.to(target_device)
+            except Exception as exc:
+                logger.warning("enable_model_cpu_offload failed (%s); moving directly to %s", exc, target_device)
+                try:
+                    pipe.to(target_device)
+                except Exception as to_exc:
+                    logger.warning("pipe.to(%s) failed: %s", target_device, to_exc)
+    else:
+        try:
+            pipe.to("cpu")
+        except Exception as exc:
+            logger.warning("pipe.to('cpu') failed: %s", exc)
+
+    pipe._gpu_optimizations_applied = True
+
+
 class Engine(ABC):
     """Abstract interface for all image and video synthesis backends."""
 
@@ -108,13 +153,26 @@ class Engine(ABC):
         self.device = "cpu"
         self.dtype: Any = None
 
-        # Configuration read from models.yaml (single source of truth)
+        # Configuration read from worker/models.yaml (single source of truth)
         self.repo_id: Optional[str] = self.config.get("repo_id")
         self.revision: Optional[str] = self.config.get("revision")
         self.files: List[str] = list(self.config.get("files") or [])
         self.recommended_dtype: Optional[str] = self.config.get("recommended_dtype")
         self.default_steps: int = int(self.config.get("default_steps", 4))
         self.default_guidance_scale: float = float(self.config.get("default_guidance_scale", 0.0))
+        self.ram_estimate_gb: float = float(self.config.get("ram_estimate_gb", 12.0))
+        self.requires_native_bf16: bool = bool(self.config.get("requires_native_bf16", False))
+
+        min_cc = self.config.get("min_compute_capability")
+        if isinstance(min_cc, (list, tuple)) and len(min_cc) >= 2:
+            self.min_compute_capability: Tuple[int, int] = (int(min_cc[0]), int(min_cc[1]))
+        elif isinstance(min_cc, (int, float)):
+            major = int(min_cc)
+            minor = int(round((min_cc - major) * 10))
+            self.min_compute_capability = (major, minor)
+        else:
+            self.min_compute_capability = (0, 0)
+
         if "min_vram_gb" in self.config:
             try:
                 self.min_vram_gb = float(self.config["min_vram_gb"])
@@ -145,8 +203,12 @@ class Engine(ABC):
             if free_gb < min_working_headroom_gb:
                 raise InsufficientVRAMError(self.engine_id, min_working_headroom_gb, free_gb)
 
+    def check_ram_guard(self) -> None:
+        """Verify host RAM capacity is sufficient before loading weights."""
+        check_host_ram_guard(self.engine_id, self.ram_estimate_gb)
+
     def apply_pipeline_optimizations(self, target_device: str, gpu_id: int = 0) -> None:
-        """Safely apply diffusers optimizations without crashing if methods are missing."""
+        """Safely apply diffusers optimizations idempotently without crashing if methods are missing."""
         if self.pipe is not None:
             safe_apply_gpu_optimizations(self.pipe, target_device=target_device, gpu_id=gpu_id)
 

@@ -1,3 +1,4 @@
+import pytest
 """tests/test_memory.py — Memory rules, GPU detection, and OOM exception detection."""
 
 from worker.memory import (
@@ -41,3 +42,19 @@ def test_oom_exception_detection() -> None:
     assert is_oom_exception(Exception("cuda oom encountered during forward pass"))
     assert not is_oom_exception(ValueError("Invalid shape"))
     assert not is_oom_exception(FileNotFoundError("Model weights not found"))
+
+def test_ram_guard_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify check_host_ram_guard raises InsufficientRAMError when estimate > 85% of available RAM."""
+    import pytest
+    from worker.memory import HostRAMInfo, InsufficientRAMError, check_host_ram_guard
+
+    # Mock available RAM to 10.0 GB (threshold at 85% = 8.5 GB)
+    mock_ram = HostRAMInfo(total_ram_gb=16.0, available_ram_gb=10.0, used_ram_gb=6.0)
+    monkeypatch.setattr("worker.memory.get_host_ram_info", lambda: mock_ram)
+
+    # 1. Estimate of 9.0 GB exceeds 8.5 GB -> Refused
+    with pytest.raises(InsufficientRAMError, match="exceeds 85% of available host RAM"):
+        check_host_ram_guard("large_engine", ram_estimate_gb=9.0)
+
+    # 2. Estimate of 5.0 GB is within limits -> Allowed
+    check_host_ram_guard("small_engine", ram_estimate_gb=5.0)

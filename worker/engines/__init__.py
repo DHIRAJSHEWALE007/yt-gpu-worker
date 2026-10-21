@@ -29,7 +29,7 @@ _ENGINES_REGISTRY: Dict[str, Type[Engine]] = {
 
 
 def load_models_config() -> Dict[str, Any]:
-    """Load models registry from worker/models.yaml (single source of truth)."""
+    """Load models registry strictly from worker/models.yaml (single source of truth)."""
     p_worker = Path(__file__).resolve().parent.parent / "models.yaml"
     if p_worker.is_file():
         try:
@@ -37,13 +37,6 @@ def load_models_config() -> Dict[str, Any]:
             return data.get("models", {}) if isinstance(data, dict) else {}
         except Exception as e:
             logger.warning("Could not read worker/models.yaml: %s", e)
-    p_root = Path(__file__).resolve().parent.parent.parent / "models.yaml"
-    if p_root.is_file():
-        try:
-            data = yaml.safe_load(p_root.read_text(encoding="utf-8"))
-            return data.get("models", {}) if isinstance(data, dict) else {}
-        except Exception as e:
-            logger.warning("Could not read root models.yaml: %s", e)
     return {}
 
 
