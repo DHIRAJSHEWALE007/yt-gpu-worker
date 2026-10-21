@@ -24,7 +24,7 @@ from pathlib import Path
 import statistics
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # Ensure repo root is on sys.path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
