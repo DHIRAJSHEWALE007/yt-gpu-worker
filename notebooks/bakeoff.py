@@ -177,7 +177,11 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
     out_dir = output_dir or (_REPO_ROOT / "outputs" / "bakeoff")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    models_path = _REPO_ROOT / "models.yaml"
+    models_path = _REPO_ROOT / "worker" / "models.yaml"
+    if not models_path.is_file():
+        models_path = _REPO_ROOT / "worker" / "models.yaml"
+    if not models_path.is_file():
+        models_path = _REPO_ROOT / "models.yaml"
     models_cfg = yaml.safe_load(models_path.read_text(encoding="utf-8")).get("models", {})
 
     bakeoff_results: Dict[str, Any] = {}
@@ -185,12 +189,15 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
     for engine_id, cfg in models_cfg.items():
         if engines_to_test and engine_id not in engines_to_test:
             continue
-        if not cfg.get("enabled", False):
+        if not engines_to_test and not cfg.get("enabled", False):
             continue
 
         logger.info("=== Running Bakeoff for Engine: %s ===", engine_id)
         engine_results: Dict[str, Any] = {
             "engine_id": engine_id,
+            "repo_id": cfg.get("repo_id"),
+            "revision": cfg.get("revision"),
+            "role": cfg.get("role"),
             "resolutions": {},
             "total_failures": 0,
             "samples": [],
@@ -210,7 +217,7 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
         engine_results["load_time_sec"] = round(load_time, 2)
 
         # 2. Benchmark fixed resolutions across 5 prompts and seeds
-        is_video = (engine_id == "wan22_ti2v5b")
+        is_video = (cfg.get("role") == "hero_clip" or engine_id in ("wan21_t2v_1_3b", "wan22_ti2v5b"))
 
         if is_video:
             # Video benchmark: 1 sample at 854x480 ~3 seconds
@@ -259,6 +266,7 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
                     "file_path": str(out_path.name),
                 })
                 engine_results["resolutions"]["854x480"] = {
+                    "avg_seconds_per_item": dur,
                     "median_seconds_per_item": dur,
                     "warmup_seconds": dur,
                     "samples_count": 1,
@@ -326,14 +334,16 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
                         logger.error("Bakeoff sample generation failed on %s (%dx%d): %s", engine_id, w, h, e)
                         engine_results["total_failures"] += 1
 
-                # Calculate median latency excluding the first warm-up item
+                # Calculate average and median latency excluding the first warm-up item
                 if latencies:
                     warmup_val = latencies[0]
                     steady_latencies = latencies[1:] if len(latencies) > 1 else latencies
+                    avg_sec = round(statistics.mean(steady_latencies), 2)
                     median_sec = round(statistics.median(steady_latencies), 2)
                     peak_vram = max(vram_measurements) if vram_measurements else 0.0
 
                     engine_results["resolutions"][res_key] = {
+                        "avg_seconds_per_item": avg_sec,
                         "median_seconds_per_item": median_sec,
                         "warmup_seconds": warmup_val,
                         "samples_count": len(latencies),

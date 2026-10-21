@@ -43,14 +43,21 @@ logger = logging.getLogger(__name__)
 
 
 def _load_models_config() -> Dict[str, Any]:
-    """Load models.yaml from repository root if present."""
-    p = Path(__file__).resolve().parent.parent / "models.yaml"
-    if p.is_file():
+    """Load models.yaml from worker/models.yaml (single source of truth) or root."""
+    p_worker = Path(__file__).resolve().parent / "models.yaml"
+    if p_worker.is_file():
         try:
-            data = yaml.safe_load(p.read_text(encoding="utf-8"))
+            data = yaml.safe_load(p_worker.read_text(encoding="utf-8"))
             return data.get("models", {}) if isinstance(data, dict) else {}
         except Exception as e:
-            logger.warning("Could not read models.yaml: %s", e)
+            logger.warning("Could not read worker/models.yaml: %s", e)
+    p_root = Path(__file__).resolve().parent.parent / "models.yaml"
+    if p_root.is_file():
+        try:
+            data = yaml.safe_load(p_root.read_text(encoding="utf-8"))
+            return data.get("models", {}) if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.warning("Could not read root models.yaml: %s", e)
     return {}
 
 
@@ -86,6 +93,7 @@ class PackRunner:
         output_dir: Optional[Path] = None,
         results_file: Optional[Path] = None,
         gpu_index: int = 0,
+        allow_test_engines: bool = False,
     ) -> None:
         self.pack = pack
         self.output_dir = output_dir or Path(pack.output_dir)
@@ -93,6 +101,7 @@ class PackRunner:
 
         self.results_file = results_file or (self.output_dir / "results.json")
         self.gpu_index = gpu_index
+        self.allow_test_engines = allow_test_engines
         self.models_config = _load_models_config()
 
         self.start_time = time.time()
@@ -153,7 +162,24 @@ class PackRunner:
             self._active_engine = None
             clear_gpu_memory()
 
-        cfg = self.models_config.get(engine_id, {})
+        cfg = self.models_config.get(engine_id)
+        if not cfg and engine_id == "wan22_ti2v5b":
+            cfg = self.models_config.get("wan21_t2v_1_3b", {})
+        elif not cfg and engine_id == "wan21_t2v_1_3b":
+            cfg = self.models_config.get("wan22_ti2v5b", {})
+        cfg = cfg or {}
+
+        # Refuse test_only engines unless STUDIO_FAKE_PROVIDERS=1 or allow_test_engines is True
+        is_test_mode = (
+            os.environ.get("STUDIO_FAKE_PROVIDERS") in ("1", "true", "True")
+            or getattr(self, "allow_test_engines", False)
+        )
+        if cfg.get("test_only", False) and not is_test_mode:
+            raise ValueError(
+                f"Engine '{engine_id}' is marked as test_only. "
+                f"Execution refused unless STUDIO_FAKE_PROVIDERS=1 is set or --test flag is provided."
+            )
+
         engine = get_engine(engine_id, config=cfg)
         logger.info("Loading new engine weights for: %s...", engine_id)
         target_dev = None
@@ -203,6 +229,24 @@ class PackRunner:
 
     def run(self) -> List[Result]:
         """Execute full pack workload and return list of Results."""
+        # Validate that test_only engines are permitted upfront
+        is_test_mode = (
+            os.environ.get("STUDIO_FAKE_PROVIDERS") in ("1", "true", "True")
+            or getattr(self, "allow_test_engines", False)
+        )
+        for it in self.pack.items:
+            cfg = self.models_config.get(it.engine)
+            if not cfg and it.engine == "wan22_ti2v5b":
+                cfg = self.models_config.get("wan21_t2v_1_3b", {})
+            elif not cfg and it.engine == "wan21_t2v_1_3b":
+                cfg = self.models_config.get("wan22_ti2v5b", {})
+            cfg = cfg or {}
+            if cfg.get("test_only", False) and not is_test_mode:
+                raise ValueError(
+                    f"Engine '{it.engine}' is marked as test_only. "
+                    f"Execution refused unless STUDIO_FAKE_PROVIDERS=1 is set or --test flag is provided."
+                )
+
         heartbeat = HeartbeatMonitor(self, interval_seconds=30.0)
         heartbeat.start()
 
@@ -311,6 +355,7 @@ def run_pack(
     output_dir: Optional[Path] = None,
     results_file: Optional[Path] = None,
     gpu_indices: Optional[List[int]] = None,
+    allow_test_engines: bool = False,
 ) -> List[Result]:
     """Top-level entrypoint to execute a Pack.
     
@@ -320,7 +365,13 @@ def run_pack(
     available_indices = gpu_indices if gpu_indices is not None else ([g.index for g in gpus] if gpus else [0])
 
     if len(available_indices) <= 1:
-        runner = PackRunner(pack, output_dir=output_dir, results_file=results_file, gpu_index=available_indices[0])
+        runner = PackRunner(
+            pack,
+            output_dir=output_dir,
+            results_file=results_file,
+            gpu_index=available_indices[0],
+            allow_test_engines=allow_test_engines,
+        )
         return runner.run()
 
     # Multi-GPU round-robin partition
@@ -342,7 +393,13 @@ def run_pack(
         if not sub_items:
             continue
         sub_pack = pack.model_copy(update={"items": sub_items})
-        runner = PackRunner(sub_pack, output_dir=target_out, results_file=target_res, gpu_index=gpu_idx)
+        runner = PackRunner(
+            sub_pack,
+            output_dir=target_out,
+            results_file=target_res,
+            gpu_index=gpu_idx,
+            allow_test_engines=allow_test_engines,
+        )
         res = runner.run()
         all_results.extend(res)
 
@@ -359,6 +416,7 @@ if __name__ == "__main__":
     parser.add_argument("--engine", type=str, default=None, help="Override engine for all items (e.g. fake, sdxl_lightning)")
     parser.add_argument("--out", type=str, default="./out", help="Output directory for rendered assets and results.json")
     parser.add_argument("--gpus", type=int, nargs="*", default=None, help="GPU device indices to use")
+    parser.add_argument("--test", action="store_true", help="Allow test_only mock engines (e.g. fake)")
 
     args = parser.parse_args()
 
@@ -382,7 +440,7 @@ if __name__ == "__main__":
     target_out = Path(args.out)
     target_out.mkdir(parents=True, exist_ok=True)
 
-    results = run_pack(loaded_pack, output_dir=target_out, gpu_indices=args.gpus)
+    results = run_pack(loaded_pack, output_dir=target_out, gpu_indices=args.gpus, allow_test_engines=args.test)
     print(f"\nExecution complete! Rendered {len(results)} items into {target_out.resolve()}:")
     for r in results:
         status_symbol = "[OK]" if r.status in ("success", "skipped") else "[FAILED]"

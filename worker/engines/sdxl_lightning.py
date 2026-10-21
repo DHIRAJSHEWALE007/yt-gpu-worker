@@ -1,4 +1,4 @@
-"""worker/engines/sdxl_lightning.py — SDXL Lightning 4-step / 8-step image engine."""
+"""worker/engines/sdxl_lightning.py ? SDXL Lightning image engine driven by models.yaml."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class SDXLLightningEngine(Engine):
-    """ByteDance/SDXL-Lightning high-speed photorealistic image generation."""
+    """SDXL-Lightning high-speed image generation driven by models.yaml."""
 
     engine_id: str = "sdxl_lightning"
     min_vram_gb: float = 8.0
@@ -26,15 +26,20 @@ class SDXLLightningEngine(Engine):
         except ImportError as e:
             raise RuntimeError(f"diffusers and torch are required for SDXLLightningEngine: {e}")
 
+        base_repo = self.config.get("base_model") or self.repo_id or self.config.get("repo_id")
+        if not base_repo:
+            raise ValueError(f"Engine '{self.engine_id}' requires 'base_model' or 'repo_id' in models.yaml.")
+        revision = self.config.get("base_revision") or self.revision or self.config.get("revision")
+
         gpus = detect_gpus()
         target_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         target_dtype = dtype or get_recommended_torch_dtype(gpus[0] if gpus else None)
 
-        base_repo = self.config.get("base_model", "stabilityai/stable-diffusion-xl-base-1.0")
         logger.info("Loading SDXL-Lightning pipeline from %s (%s)...", base_repo, target_dtype)
 
         self.pipe = StableDiffusionXLPipeline.from_pretrained(
             base_repo,
+            revision=revision,
             torch_dtype=target_dtype,
             variant="fp16" if target_dtype == torch.float16 else None,
         )
@@ -61,8 +66,8 @@ class SDXLLightningEngine(Engine):
 
         import torch
 
-        steps = item.steps or self.config.get("default_steps", 4)
-        guidance = item.guidance_scale if item.guidance_scale is not None else self.config.get("default_guidance_scale", 0.0)
+        steps = item.steps if item.steps is not None else self.default_steps
+        guidance = item.guidance_scale if item.guidance_scale is not None else self.default_guidance_scale
 
         generator = None
         if item.seed is not None:

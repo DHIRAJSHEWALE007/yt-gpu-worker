@@ -1,4 +1,4 @@
-"""worker/engines/fake.py — CPU-only mock engine for tests and laptop development.
+"""worker/engines/fake.py ? CPU-only mock engine for tests and laptop development.
 
 Generates valid, small PNG images and tiny valid MP4 video containers without
 requiring PyTorch, CUDA, diffusers, or ffmpeg.
@@ -60,6 +60,7 @@ class FakeEngine(Engine):
 
     def load(self, device: Optional[str] = None, dtype: Optional[Any] = None) -> None:
         self.device = "cpu"
+        self.dtype = dtype or self.recommended_dtype or "cpu"
         self.is_loaded = True
         logger.info("[FakeEngine] Mock weights loaded successfully on CPU.")
 

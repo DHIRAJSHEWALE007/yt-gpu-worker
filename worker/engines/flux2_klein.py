@@ -1,4 +1,4 @@
-"""worker/engines/flux2_klein.py — FLUX.1 Schnell quantized 4-step image engine."""
+"""worker/engines/flux2_klein.py ? FLUX rectified flow image engine driven by models.yaml."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _get_hf_token() -> Optional[str]:
 
 
 class Flux2KleinEngine(Engine):
-    """FLUX.1 Schnell quantized rectified flow pipeline."""
+    """FLUX rectified flow pipeline driven by models.yaml."""
 
     engine_id: str = "flux2_klein"
     min_vram_gb: float = 10.0
@@ -42,19 +42,20 @@ class Flux2KleinEngine(Engine):
         except ImportError as e:
             raise RuntimeError(f"diffusers>=0.30.0 and torch required for Flux2KleinEngine: {e}")
 
-        # Ensure any residual host and GPU memory from prior models is released
+        repo_id = self.repo_id or self.config.get("repo_id")
+        if not repo_id:
+            raise ValueError(f"Engine '{self.engine_id}' has no repo_id configured in models.yaml.")
+        revision = self.revision or self.config.get("revision")
+
         clear_gpu_memory()
 
         gpus = detect_gpus()
         target_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         target_dtype = dtype or get_recommended_torch_dtype(gpus[0] if gpus else None)
 
-        repo_id = self.config.get("repo_id", "black-forest-labs/FLUX.1-schnell")
         token = _get_hf_token()
+        logger.info("Loading FLUX pipeline from %s (rev: %s, authenticated: %s)...", repo_id, revision, bool(token))
 
-        logger.info("Loading FLUX.1 pipeline from %s (authenticated: %s)...", repo_id, bool(token))
-
-        # Check if 4-bit NF4 quantization config can be built to prevent host RAM OOM
         pipeline_quant_config = None
         if target_device.startswith("cuda"):
             try:
@@ -76,16 +77,16 @@ class Flux2KleinEngine(Engine):
                         ),
                     }
                 )
-                logger.info("Enabled 4-bit NF4 quantization for FLUX transformer & T5-XXL to fit in RAM/VRAM.")
+                logger.info("Enabled 4-bit NF4 quantization for FLUX transformer & T5-XXL.")
             except Exception as quant_err:
                 logger.debug("Could not initialize bitsandbytes 4-bit config (%s), trying balanced loading.", quant_err)
 
         loaded = False
-        # Strategy 1: Load with 4-bit PipelineQuantizationConfig (avoids Host RAM OOM by quantizing weights on the fly)
         if pipeline_quant_config is not None:
             try:
                 self.pipe = FluxPipeline.from_pretrained(
                     repo_id,
+                    revision=revision,
                     quantization_config=pipeline_quant_config,
                     torch_dtype=target_dtype,
                     token=token,
@@ -95,7 +96,6 @@ class Flux2KleinEngine(Engine):
             except Exception as e:
                 logger.warning("PipelineQuantizationConfig loading failed (%s), falling back...", e)
 
-        # Strategy 2: Multi-GPU / Balanced loading if 2+ GPUs are detected (e.g. Kaggle dual-T4)
         if not loaded and target_device.startswith("cuda") and len(gpus) >= 2:
             try:
                 max_mem = {g.index: f"{int(g.free_vram_mb * 0.9)}MB" for g in gpus}
@@ -103,6 +103,7 @@ class Flux2KleinEngine(Engine):
                 logger.info("Attempting multi-GPU balanced loading across %d GPUs with max_memory: %s", len(gpus), max_mem)
                 self.pipe = FluxPipeline.from_pretrained(
                     repo_id,
+                    revision=revision,
                     torch_dtype=target_dtype,
                     device_map="balanced",
                     max_memory=max_mem,
@@ -113,11 +114,11 @@ class Flux2KleinEngine(Engine):
             except Exception as e:
                 logger.warning("device_map='balanced' loading failed (%s), trying standard offload...", e)
 
-        # Strategy 3: Standard low_cpu_mem_usage loading
         if not loaded:
             try:
                 self.pipe = FluxPipeline.from_pretrained(
                     repo_id,
+                    revision=revision,
                     torch_dtype=target_dtype,
                     token=token,
                     low_cpu_mem_usage=True,
@@ -133,7 +134,6 @@ class Flux2KleinEngine(Engine):
                         f"  1. Accept the license at: https://huggingface.co/{repo_id}\n"
                         f"  2. In your Kaggle notebook, set your HF access token before running:\n"
                         f"     import os; os.environ['HF_TOKEN'] = 'hf_your_token_here'\n"
-                        f"     (or add 'HF_TOKEN' to Kaggle Secrets -> Add-ons -> Secrets)\n"
                     ) from exc
                 raise
 
@@ -141,7 +141,6 @@ class Flux2KleinEngine(Engine):
         if target_device.startswith("cuda:") and target_device.split(":")[1].isdigit():
             gpu_id = int(target_device.split(":")[1])
 
-        # If pipe was loaded via device_map, Accelerate already manages device placement
         if not hasattr(self.pipe, "hf_device_map") or not self.pipe.hf_device_map:
             self.apply_pipeline_optimizations(target_device, gpu_id=gpu_id)
 
@@ -156,7 +155,8 @@ class Flux2KleinEngine(Engine):
 
         import torch
 
-        steps = item.steps or 4
+        steps = item.steps if item.steps is not None else self.default_steps
+        guidance = item.guidance_scale if item.guidance_scale is not None else self.default_guidance_scale
         generator = None
         if item.seed is not None:
             try:
@@ -175,6 +175,7 @@ class Flux2KleinEngine(Engine):
             width=w,
             height=h,
             num_inference_steps=steps,
+            guidance_scale=guidance,
             max_sequence_length=256,
             generator=generator,
         )

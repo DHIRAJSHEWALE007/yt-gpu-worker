@@ -1,4 +1,4 @@
-"""worker/engines/zimage_turbo.py — Fast distilled 1-step diffusion image engine."""
+"""worker/engines/zimage_turbo.py ? Fast distilled diffusion image engine driven by models.yaml."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class ZImageTurboEngine(Engine):
-    """SDXL-Turbo single-step real-time generation."""
+    """Fast distilled diffusion image generation engine driven by models.yaml."""
 
     engine_id: str = "zimage_turbo"
     min_vram_gb: float = 7.0
@@ -26,13 +26,18 @@ class ZImageTurboEngine(Engine):
         except ImportError as e:
             raise RuntimeError(f"diffusers and torch required for ZImageTurboEngine: {e}")
 
+        repo_id = self.repo_id or self.config.get("repo_id")
+        if not repo_id:
+            raise ValueError(f"Engine '{self.engine_id}' has no repo_id configured in models.yaml.")
+        revision = self.revision or self.config.get("revision")
+
         gpus = detect_gpus()
         target_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         target_dtype = dtype or get_recommended_torch_dtype(gpus[0] if gpus else None)
 
-        repo_id = self.config.get("repo_id", "stabilityai/sdxl-turbo")
         self.pipe = AutoPipelineForText2Image.from_pretrained(
             repo_id,
+            revision=revision,
             torch_dtype=target_dtype,
             variant="fp16" if target_dtype == torch.float16 else None,
         )
@@ -54,8 +59,8 @@ class ZImageTurboEngine(Engine):
 
         import torch
 
-        steps = item.steps or 4
-        guidance = item.guidance_scale if item.guidance_scale is not None else 0.0
+        steps = item.steps if item.steps is not None else self.default_steps
+        guidance = item.guidance_scale if item.guidance_scale is not None else self.default_guidance_scale
 
         generator = None
         if item.seed is not None:

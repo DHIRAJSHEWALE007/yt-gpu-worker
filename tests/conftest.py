@@ -22,3 +22,8 @@ def tmp_pack(tmp_path: Path) -> Pack:
         items=items,
         output_dir=str(tmp_path / "outputs"),
     )
+
+@pytest.fixture(autouse=True)
+def enable_fake_providers_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure test_only engines are permitted in all test runs per project rules."""
+    monkeypatch.setenv("STUDIO_FAKE_PROVIDERS", "1")

@@ -1,4 +1,4 @@
-"""worker/engines/wan22_ti2v5b.py — Wan 2.1/2.2 Text/Image-to-Video diffusion engine."""
+"""worker/engines/wan22_ti2v5b.py ? Wan Video diffusion engine driven by models.yaml."""
 
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 class Wan22TI2V5BEngine(Engine):
-    """Wan 2.1 1.3B / Wan 2.2 diffusion model for text-and-image conditioned 480p video clips."""
+    """Wan Text-to-Video diffusion engine driven by models.yaml."""
 
-    engine_id: str = "wan22_ti2v5b"
+    engine_id: str = "wan21_t2v_1_3b"
     min_vram_gb: float = 12.0
 
     def load(self, device: Optional[str] = None, dtype: Optional[Any] = None) -> None:
@@ -32,19 +32,24 @@ class Wan22TI2V5BEngine(Engine):
         except ImportError as e:
             raise RuntimeError(
                 f"WanPipeline is not available in the installed diffusers package: {e}.\n"
-                f"Wan 2.1 video requires diffusers >= 0.33.0.\n"
+                f"Wan video requires diffusers >= 0.33.0.\n"
                 f"Please run: !pip install --upgrade diffusers"
             )
+
+        repo_id = self.repo_id or self.config.get("repo_id")
+        if not repo_id:
+            raise ValueError(f"Engine '{self.engine_id}' requires 'repo_id' in models.yaml configuration.")
+        revision = self.revision or self.config.get("revision")
 
         gpus = detect_gpus()
         target_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         target_dtype = dtype or get_recommended_torch_dtype(gpus[0] if gpus else None)
 
-        repo_id = self.config.get("repo_id", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
         logger.info("Loading Wan video pipeline from %s on %s (%s)...", repo_id, target_device, target_dtype)
 
         self.pipe = WanPipeline.from_pretrained(
             repo_id,
+            revision=revision,
             torch_dtype=target_dtype,
         )
 
@@ -69,17 +74,15 @@ class Wan22TI2V5BEngine(Engine):
         output_dir.mkdir(parents=True, exist_ok=True)
         target_file = output_dir / f"{item.id}.mp4"
 
-        # Dimensions: Wan 2.1 480p expects multiples of 16 (e.g. 832x480)
         w = ((item.width // 16) * 16) if item.width else 832
         h = ((item.height // 16) * 16) if item.height else 480
 
-        # Wan uses frame counts matching 1 + 4*k (e.g., 17 frames ~ 1.1s, 33 frames ~ 2s, 81 frames ~ 5s)
         frames_count = 17
         if item.duration_seconds and item.duration_seconds > 2.0:
             frames_count = 33
 
-        steps = item.steps or self.config.get("default_steps", 25)
-        guidance = item.guidance_scale if item.guidance_scale is not None else self.config.get("default_guidance_scale", 5.0)
+        steps = item.steps if item.steps is not None else self.default_steps
+        guidance = item.guidance_scale if item.guidance_scale is not None else self.default_guidance_scale
 
         generator = None
         if item.seed is not None:
@@ -88,7 +91,7 @@ class Wan22TI2V5BEngine(Engine):
             except Exception:
                 generator = torch.Generator(device="cpu").manual_seed(item.seed)
 
-        logger.info("Synthesizing video with Wan 2.1 (%dx%d, %d frames)...", w, h, frames_count)
+        logger.info("Synthesizing video with Wan (%dx%d, %d frames)...", w, h, frames_count)
 
         output = self.pipe(
             prompt=item.prompt,

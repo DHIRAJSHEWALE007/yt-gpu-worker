@@ -145,3 +145,105 @@ def test_check_vram_guard_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("worker.engines.base.detect_gpus", lambda: [tiny_gpu])
     with pytest.raises(InsufficientVRAMError):
         engine.check_vram_guard(item)
+
+def test_models_yaml_single_source_of_truth() -> None:
+    """Validate worker/models.yaml schema and required governance fields."""
+    import yaml
+    from worker.engines import load_models_config
+
+    models = load_models_config()
+    assert "zimage_turbo" in models
+    assert "flux2_klein" in models
+    assert "wan21_t2v_1_3b" in models
+    assert "sdxl_lightning" in models
+    assert "fake" in models
+
+    # 1. zimage_turbo checks
+    z = models["zimage_turbo"]
+    assert z["role"] == "default_image"
+    assert z["default_steps"] == 9
+    assert z["default_guidance_scale"] == 0.0
+    assert z["seconds_per_item"] == 8.5
+    assert z["load_seconds"] == 38.0
+    assert z["repo_id"] == "stabilityai/sdxl-turbo"
+    assert z["revision"] == "71153311d3dbb46851df1931d3ca6e939de83304"
+    assert z["license"] == "other"
+    assert z["commercial_ok"] is False
+    assert z["hero_only"] is False
+    assert z["test_only"] is False
+
+    # 2. flux2_klein checks (confirmed 4B Apache variant)
+    f = models["flux2_klein"]
+    assert f["role"] == "hero_image"
+    assert f["repo_id"] == "black-forest-labs/FLUX.2-klein-4B"
+    assert f["revision"] == "e7b7dc27f91deacad38e78976d1f2b499d76a294"
+    assert f["license"] == "Apache-2.0"
+    assert f["commercial_ok"] is True
+    assert f["gated"] is False
+    assert f["seconds_per_item"] == 40.0
+    assert f["load_seconds"] == 321.0
+    assert f["peak_vram_gb"] == 11.5
+
+    # 3. Wan 2.1 1.3B checks
+    w = models["wan21_t2v_1_3b"]
+    assert w["role"] == "hero_clip"
+    assert w["hero_only"] is True
+    assert w["test_only"] is False
+    assert w["repo_id"] == "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    assert w["revision"] == "0fad780a534b6463e45facd96134c9f345acfa5b"
+    assert w["license"] == "Apache-2.0"
+    assert w["commercial_ok"] is True
+    assert w["seconds_per_item"] == 390.0
+    assert w["load_seconds"] == 261.0
+
+    # 4. sdxl_lightning checks
+    s = models["sdxl_lightning"]
+    assert s["role"] == "fallback"
+    assert s["enabled"] is False
+    assert "smeared" in s["notes"].lower()
+    assert s["repo_id"] == "ByteDance/SDXL-Lightning"
+    assert s["revision"] == "c9a24f48e1c025556787b0c58dd67a091ece2e44"
+    assert s["license"] == "openrail++"
+
+    # 5. fake mock checks
+    fk = models["fake"]
+    assert fk["role"] == "test"
+    assert fk["test_only"] is True
+    assert fk["enabled"] is False
+
+
+def test_no_hardcoded_repo_ids_in_engine_files() -> None:
+    """Ensure no engine file in worker/engines/*.py hardcodes Hugging Face repo IDs.
+    
+    All repo IDs, revisions, files, dtypes, steps, and guidance must come from models.yaml.
+    """
+    import ast
+    import re
+
+    engines_dir = Path(__file__).resolve().parent.parent / "worker" / "engines"
+    py_files = list(engines_dir.glob("*.py"))
+    assert len(py_files) >= 5, f"Expected at least 5 engine files, found {len(py_files)}"
+
+    # Known HF organization prefixes or repo format
+    hf_org_prefixes = (
+        "stabilityai/",
+        "black-forest-labs/",
+        "ByteDance/",
+        "Wan-AI/",
+        "CompVis/",
+        "runwayml/",
+    )
+
+    for py_file in py_files:
+        if py_file.name.startswith("__"):
+            continue
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=py_file.name)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                val = node.value.strip()
+                for prefix in hf_org_prefixes:
+                    if val.startswith(prefix) or val.lower().startswith(prefix.lower()):
+                        pytest.fail(
+                            f"Engine file '{py_file.name}' hardcodes Hugging Face repo ID '{val}'! "
+                            f"All repo IDs must be configured exclusively in worker/models.yaml."
+                        )

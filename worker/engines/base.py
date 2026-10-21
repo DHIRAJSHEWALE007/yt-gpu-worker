@@ -1,9 +1,10 @@
-"""worker/engines/base.py — Abstract Base Class for diffusers inference engines.
+"""worker/engines/base.py ? Abstract Base Class for diffusers inference engines.
 
 Enforces:
 - diffusers pipeline optimizations (VAE tiling, text-encoder CPU offload).
 - fp16 on Tesla T4 and P100 (never bf16).
 - Clear error when GPU VRAM is insufficient.
+- Configuration loaded from models.yaml as single source of truth.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from worker.memory import clear_gpu_memory, detect_gpus, get_recommended_torch_dtype
 from worker.schema import Item
@@ -106,6 +107,19 @@ class Engine(ABC):
         self.pipe: Any = None
         self.device = "cpu"
         self.dtype: Any = None
+
+        # Configuration read from models.yaml (single source of truth)
+        self.repo_id: Optional[str] = self.config.get("repo_id")
+        self.revision: Optional[str] = self.config.get("revision")
+        self.files: List[str] = list(self.config.get("files") or [])
+        self.recommended_dtype: Optional[str] = self.config.get("recommended_dtype")
+        self.default_steps: int = int(self.config.get("default_steps", 4))
+        self.default_guidance_scale: float = float(self.config.get("default_guidance_scale", 0.0))
+        if "min_vram_gb" in self.config:
+            try:
+                self.min_vram_gb = float(self.config["min_vram_gb"])
+            except (ValueError, TypeError):
+                pass
 
     def check_vram_guard(self, item: Item) -> None:
         """Verify GPU has enough VRAM capacity before loading or generating."""

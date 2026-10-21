@@ -102,3 +102,28 @@ def test_runner_oom_recovery_retry(tmp_path: Path) -> None:
     normal_res = [r for r in results if r.item_id == "shot_normal"][0]
     assert normal_res.status == "success"
     assert normal_res.retried_oom is False
+
+def test_runner_refuses_test_only_engine_without_env_or_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify runner refuses to run test_only engines unless STUDIO_FAKE_PROVIDERS or allow_test_engines is set."""
+    monkeypatch.delenv("STUDIO_FAKE_PROVIDERS", raising=False)
+
+    item = Item(id="test_mock_refuse", engine="fake", prompt="test", width=64, height=64)
+    pack = Pack(pack_id="pack_test_refuse", items=[item], output_dir=str(tmp_path / "refuse_out"))
+
+    # Case 1: Without env or flag -> must raise ValueError
+    runner_refused = PackRunner(pack, output_dir=tmp_path / "refuse_out", allow_test_engines=False)
+    with pytest.raises(ValueError, match="marked as test_only"):
+        runner_refused.run()
+
+    # Case 2: With allow_test_engines=True -> succeeds
+    runner_allowed = PackRunner(pack, output_dir=tmp_path / "allow_out", allow_test_engines=True)
+    results = runner_allowed.run()
+    assert len(results) == 1
+    assert results[0].status == "success"
+
+    # Case 3: With STUDIO_FAKE_PROVIDERS=1 -> succeeds
+    monkeypatch.setenv("STUDIO_FAKE_PROVIDERS", "1")
+    runner_env = PackRunner(pack, output_dir=tmp_path / "env_out", allow_test_engines=False)
+    results_env = runner_env.run()
+    assert len(results_env) == 1
+    assert results_env[0].status == "success"
