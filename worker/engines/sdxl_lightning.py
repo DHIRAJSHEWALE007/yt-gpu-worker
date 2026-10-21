@@ -1,12 +1,14 @@
-"""worker/engines/sdxl_lightning.py ? SDXL Lightning image engine driven by models.yaml.
+"""worker/engines/sdxl_lightning.py — SDXL Lightning image engine driven by models.yaml.
 
 Architecture:
 - Builds UNet2DConditionModel from base repo config (stabilityai/stable-diffusion-xl-base-1.0).
 - Loads ByteDance/SDXL-Lightning sdxl_lightning_4step_unet.safetensors into UNet in fp16.
-- Passes patched UNet to StableDiffusionXLPipeline.
+- Loads madebyollin/sdxl-vae-fp16-fix (MIT license, pinned revision) once at load to prevent NaN overflows
+  and stop diffusers per-image upcast_vae warning spam.
+- Passes patched UNet and fp16-safe VAE to StableDiffusionXLPipeline.
 - Uses EulerDiscreteScheduler with timestep_spacing='trailing'.
 - Enforces guidance_scale 0.0 and exactly 4 steps.
-- Uses VAE fix only if black images appear (configured via vae_fix_model in models.yaml).
+- Raises DegenerateOutputError if output is black or degenerate.
 - Zero hardcoded Hugging Face repo IDs in code.
 """
 
@@ -54,7 +56,12 @@ class SDXLLightningEngine(Engine):
 
         try:
             import torch
-            from diffusers import EulerDiscreteScheduler, StableDiffusionXLPipeline, UNet2DConditionModel
+            from diffusers import (
+                AutoencoderKL,
+                EulerDiscreteScheduler,
+                StableDiffusionXLPipeline,
+                UNet2DConditionModel,
+            )
             from huggingface_hub import hf_hub_download
             from safetensors.torch import load_file
         except ImportError as e:
@@ -102,16 +109,46 @@ class SDXLLightningEngine(Engine):
         self.lightning_weights_loaded = True
         log_host_ram_stage("after UNet weights loaded")
 
-        # 3. Instantiate pipeline with the patched UNet
+        # 3. Load fp16-safe VAE once at load time to prevent NaNs and stop upcast_vae warning spam
+        vae = None
+        vae_fix_model = self.config.get("vae_fix_model")
+        vae_fix_rev = self.config.get("vae_fix_revision", "207b116dae70ace3637169f1ddd2434b91b3a8cd")
+        if vae_fix_model:
+            try:
+                logger.info("Loading fixed VAE from %s (rev: %s) in %s...", vae_fix_model, vae_fix_rev, target_dtype)
+                vae = AutoencoderKL.from_pretrained(
+                    vae_fix_model,
+                    revision=vae_fix_rev,
+                    torch_dtype=target_dtype,
+                ).to(target_device)
+                log_host_ram_stage("after fixed VAE loaded")
+            except Exception as vae_err:
+                logger.warning("Could not load fixed VAE from %s (%s); falling back to base model VAE", vae_fix_model, vae_err)
+
+        # 4. Instantiate pipeline with the patched UNet and fixed VAE
+        pipe_kwargs: Dict[str, Any] = {
+            "unet": unet,
+            "revision": base_rev,
+            "torch_dtype": target_dtype,
+            "variant": "fp16" if target_dtype == torch.float16 else None,
+        }
+        if vae is not None:
+            pipe_kwargs["vae"] = vae
+
         self.pipe = StableDiffusionXLPipeline.from_pretrained(
             base_repo,
-            unet=unet,
-            revision=base_rev,
-            torch_dtype=target_dtype,
-            variant="fp16" if target_dtype == torch.float16 else None,
+            **pipe_kwargs,
         )
 
-        # 4. Use EulerDiscreteScheduler with timestep_spacing='trailing'
+        # If custom VAE wasn't loaded, keep the base VAE in float32 once at load to prevent per-image warning spam
+        if vae is None and hasattr(self.pipe, "upcast_vae"):
+            try:
+                self.pipe.upcast_vae()
+                logger.info("Base VAE upcast to float32 once at load time.")
+            except Exception:
+                pass
+
+        # 5. Use EulerDiscreteScheduler with timestep_spacing='trailing'
         self.pipe.scheduler = EulerDiscreteScheduler.from_config(
             self.pipe.scheduler.config,
             timestep_spacing="trailing",
@@ -163,30 +200,6 @@ class SDXLLightningEngine(Engine):
         )
 
         image = result.images[0]
-
-        # Use fixed VAE only if black images appear from standard SDXL VAE
-        if _is_black_image(image):
-            logger.warning("[SDXL VAE RECOVERY] Detected black image in fp16. Loading fixed VAE...")
-            vae_fix_repo = self.config.get("vae_fix_model")
-            if vae_fix_repo:
-                try:
-                    from diffusers import AutoencoderKL
-                    self.pipe.vae = AutoencoderKL.from_pretrained(
-                        vae_fix_repo,
-                        torch_dtype=self.dtype,
-                    ).to(self.device)
-                    retry_result = self.pipe(
-                        prompt=item.prompt,
-                        negative_prompt=item.negative_prompt or None,
-                        width=w,
-                        height=h,
-                        num_inference_steps=steps,
-                        guidance_scale=guidance,
-                        generator=generator,
-                    )
-                    image = retry_result.images[0]
-                except Exception as vae_err:
-                    logger.error("VAE fix loading failed: %s", vae_err)
 
         if _is_black_image(image):
             raise DegenerateOutputError(f"Engine '{self.engine_id}' produced black image output.")

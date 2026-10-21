@@ -375,30 +375,50 @@ def run_pack(
     allow_test_engines: bool = False,
     allow_noncommercial: bool = False,
     allow_slow_bf16: bool = False,
+    parallel_mode: Optional[str] = None,
 ) -> List[Result]:
     """Top-level entrypoint to execute a Pack.
     
-    If multiple GPUs are specified, splits items across processes using CUDA_VISIBLE_DEVICES.
+    Supports two multi-GPU parallel execution modes:
+    - 'single_process_multi_gpu': Single process with access to all GPUs (e.g. device_map='balanced')
+    - 'process_per_gpu': Multiple worker processes, one isolated per GPU via CUDA_VISIBLE_DEVICES
     """
     gpus = detect_gpus()
     available_indices = gpu_indices if gpu_indices is not None else ([g.index for g in gpus] if gpus else [0])
+    models_cfg = _load_models_config()
 
-    if len(available_indices) <= 1:
+    primary_engine = pack.items[0].engine if pack.items else "sdxl_lightning"
+    engine_cfg = models_cfg.get(primary_engine, {})
+
+    effective_parallel_mode = parallel_mode or engine_cfg.get("parallel_mode")
+    if not effective_parallel_mode:
+        effective_parallel_mode = "single_process_multi_gpu" if primary_engine in ("flux2_klein", "wan21_t2v_1_3b", "wan22_ti2v5b") else "process_per_gpu"
+
+    target_out = output_dir or Path(pack.output_dir)
+    target_res = results_file or (target_out / "results.json")
+
+    # Mode A: Single process with all GPUs visible
+    if len(available_indices) <= 1 or effective_parallel_mode == "single_process_multi_gpu":
+        logger.info(
+            "Executing pack in single-process mode on %d GPU(s): %s (parallel_mode=%s)",
+            len(available_indices),
+            available_indices,
+            effective_parallel_mode,
+        )
         runner = PackRunner(
             pack,
-            output_dir=output_dir,
-            results_file=results_file,
-            gpu_index=available_indices[0],
+            output_dir=target_out,
+            results_file=target_res,
+            gpu_index=available_indices[0] if len(available_indices) == 1 else None,
             allow_test_engines=allow_test_engines,
             allow_noncommercial=allow_noncommercial,
             allow_slow_bf16=allow_slow_bf16,
         )
         return runner.run()
 
-    # Enforce Host RAM guard: limit active worker processes so total required RAM fits in host RAM
+    # Mode B: process_per_gpu (enforce host RAM guard & partition)
     from worker.memory import get_host_ram_info
     ram_info = get_host_ram_info()
-    models_cfg = _load_models_config()
     max_engine_ram = 12.0
     for it in pack.items:
         cfg = models_cfg.get(it.engine, {})
@@ -422,35 +442,69 @@ def run_pack(
         )
 
     active_indices = available_indices[:allowed_workers]
-    logger.info("Distributing %d items across %d active GPUs: %s", len(pack.items), len(active_indices), active_indices)
+    logger.info("Distributing %d items across %d active GPUs: %s (mode=process_per_gpu)", len(pack.items), len(active_indices), active_indices)
     partitions: Dict[int, List[Item]] = {gpu_idx: [] for gpu_idx in active_indices}
     for idx, item in enumerate(pack.items):
         target_gpu = active_indices[idx % len(active_indices)]
         partitions[target_gpu].append(item)
 
-    # In multi-GPU child process wrapper:
-    # sets os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
-    # and executes partition
     all_results: List[Result] = []
-    # For robust single-machine portability execute partitions sequentially or via multiprocessing
-    target_out = output_dir or Path(pack.output_dir)
-    target_res = results_file or (target_out / "results.json")
 
-    for gpu_idx, sub_items in partitions.items():
-        if not sub_items:
-            continue
-        sub_pack = pack.model_copy(update={"items": sub_items})
-        runner = PackRunner(
-            sub_pack,
-            output_dir=target_out,
-            results_file=target_res,
-            gpu_index=gpu_idx,
-            allow_test_engines=allow_test_engines,
-            allow_noncommercial=allow_noncommercial,
-            allow_slow_bf16=allow_slow_bf16,
-        )
-        res = runner.run()
-        all_results.extend(res)
+    # In mock test environments or sequential execution fallback:
+    is_mock_env = (os.environ.get("STUDIO_FAKE_PROVIDERS") in ("1", "true", "True") or not gpus)
+
+    if is_mock_env:
+        for gpu_idx, sub_items in partitions.items():
+            if not sub_items:
+                continue
+            sub_pack = pack.model_copy(update={"items": sub_items})
+            runner = PackRunner(
+                sub_pack,
+                output_dir=target_out,
+                results_file=target_res,
+                gpu_index=gpu_idx,
+                allow_test_engines=allow_test_engines,
+                allow_noncommercial=allow_noncommercial,
+                allow_slow_bf16=allow_slow_bf16,
+            )
+            res = runner.run()
+            all_results.extend(res)
+    else:
+        # Multi-process execution via subprocess with isolated CUDA_VISIBLE_DEVICES
+        import subprocess
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _execute_worker_process(gpu_idx: int, sub_items: List[Item]) -> None:
+            sub_pack = pack.model_copy(update={"items": sub_items, "pack_id": f"{pack.pack_id}_gpu{gpu_idx}"})
+            sub_pack_path = target_out / f".temp_pack_gpu{gpu_idx}.json"
+            sub_pack_path.write_text(sub_pack.model_dump_json(indent=2), encoding="utf-8")
+
+            cmd = [
+                sys.executable,
+                "-m", "worker.runner",
+                "--pack", str(sub_pack_path),
+                "--out", str(target_out),
+                "--gpus", "0",
+            ]
+            if allow_test_engines:
+                cmd.append("--test")
+            if allow_noncommercial:
+                cmd.append("--allow-noncommercial")
+            if allow_slow_bf16:
+                cmd.append("--allow-slow-bf16")
+
+            child_env = os.environ.copy()
+            child_env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
+            try:
+                subprocess.run(cmd, env=child_env, check=True)
+            finally:
+                if sub_pack_path.is_file():
+                    sub_pack_path.unlink()
+
+        with ThreadPoolExecutor(max_workers=len(partitions)) as executor:
+            futures = [executor.submit(_execute_worker_process, g_idx, items) for g_idx, items in partitions.items() if items]
+            for f in futures:
+                f.result()
 
     final_results = load_results(target_res)
     return final_results if final_results else all_results
@@ -468,6 +522,7 @@ if __name__ == "__main__":
     parser.add_argument("--test", action="store_true", help="Allow test_only mock engines (e.g. fake)")
     parser.add_argument("--allow-noncommercial", action="store_true", help="Allow engines with commercial_ok: false (e.g. sdxl_turbo)")
     parser.add_argument("--allow-slow-bf16", action="store_true", help="Allow software bf16 emulation on compute capability < 8.0 GPUs")
+    parser.add_argument("--parallel-mode", type=str, choices=["single_process_multi_gpu", "process_per_gpu"], default=None, help="Execution mode for multi-GPU setups")
 
     args = parser.parse_args()
 
@@ -491,8 +546,15 @@ if __name__ == "__main__":
     target_out = Path(args.out)
     target_out.mkdir(parents=True, exist_ok=True)
 
-    results = run_pack(loaded_pack, output_dir=target_out, gpu_indices=args.gpus, allow_test_engines=args.test, allow_noncommercial=args.allow_noncommercial,
-        allow_slow_bf16=args.allow_slow_bf16)
+    results = run_pack(
+        loaded_pack,
+        output_dir=target_out,
+        gpu_indices=args.gpus,
+        allow_test_engines=args.test,
+        allow_noncommercial=args.allow_noncommercial,
+        allow_slow_bf16=args.allow_slow_bf16,
+        parallel_mode=args.parallel_mode,
+    )
     print(f"\nExecution complete! Rendered {len(results)} items into {target_out.resolve()}:")
     for r in results:
         status_symbol = "[OK]" if r.status in ("success", "skipped") else "[FAILED]"

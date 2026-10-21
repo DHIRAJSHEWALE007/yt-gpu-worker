@@ -112,7 +112,11 @@ def generate_contact_sheet_html(results: Dict[str, Any], output_path: Path) -> N
         html_lines.append("  <div class='engine-section'>")
         html_lines.append("    <div class='engine-header'>")
         html_lines.append(f"      <h2 class='engine-title'>Engine: {engine_id}</h2>")
-        html_lines.append(f"      <div class='engine-meta'>Load Time: {data.get('load_time_sec', 0):.2f}s | Failures: {data.get('total_failures', 0)}</div>")
+        placement_str = ""
+        comp_pl = data.get("component_placement", {})
+        if comp_pl:
+            placement_str = " | Placements: " + ", ".join(f"{k}→{v}" for k, v in comp_pl.items())
+        html_lines.append(f"      <div class='engine-meta'>Load Time: {data.get('load_time_sec', 0):.2f}s | Mode: {data.get('device_mode', 'default')}{placement_str} | Failures: {data.get('total_failures', 0)}</div>")
         html_lines.append("    </div>")
 
         html_lines.append("    <table class='metrics-table'>")
@@ -173,6 +177,46 @@ def generate_contact_sheet_html(results: Dict[str, Any], output_path: Path) -> N
     logger.info("Saved contact sheet HTML to: %s", output_path)
 
 
+def inspect_engine_placement(engine: Any) -> Dict[str, Any]:
+    """Inspect and report device_map, offload mode, and component placement across GPUs."""
+    pipe = getattr(engine, "pipe", None)
+    info: Dict[str, Any] = {
+        "device_mode": "unknown",
+        "device_map": None,
+        "component_placement": {},
+    }
+    if pipe is None:
+        return info
+
+    if hasattr(pipe, "hf_device_map") and isinstance(pipe.hf_device_map, dict):
+        info["device_mode"] = "device_map"
+        info["device_map"] = {str(k): str(v) for k, v in pipe.hf_device_map.items()}
+        info["component_placement"] = {str(k): str(v) for k, v in pipe.hf_device_map.items()}
+    elif getattr(pipe, "_offload_hook_installed", False) or getattr(pipe, "is_model_cpu_offload", False):
+        info["device_mode"] = "model_cpu_offload"
+    elif getattr(pipe, "is_sequential_cpu_offload", False):
+        info["device_mode"] = "sequential_cpu_offload"
+    else:
+        info["device_mode"] = f"direct_{getattr(engine, 'device', 'cpu')}"
+
+    # Inspect individual components across GPUs (e.g. transformer, unet, text_encoder, vae)
+    for comp_name in ("transformer", "unet", "text_encoder", "text_encoder_2", "vae"):
+        comp = getattr(pipe, comp_name, None)
+        if comp is not None:
+            dev = getattr(comp, "device", None)
+            if dev is not None:
+                info["component_placement"][comp_name] = str(dev)
+            elif hasattr(comp, "parameters"):
+                try:
+                    p = next(comp.parameters(), None)
+                    if p is not None:
+                        info["component_placement"][comp_name] = str(p.device)
+                except Exception:
+                    pass
+
+    return info
+
+
 def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) -> Optional[Dict[str, Any]]:
     """Benchmark a single engine in isolation and return its metrics dict."""
     logger.info("=== Running Bakeoff for Engine: %s ===", engine_id)
@@ -199,6 +243,9 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
 
     engine_dtype = str(getattr(engine, "dtype", cfg.get("recommended_dtype", "unknown")))
 
+    placement = inspect_engine_placement(engine)
+    logger.info("Engine %s placement: mode=%s, components=%s", engine_id, placement["device_mode"], placement["component_placement"])
+
     engine_results: Dict[str, Any] = {
         "engine_id": engine_id,
         "pipeline_class": pipe_class_name,
@@ -208,6 +255,9 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
         "diffusers_version": diffusers_ver,
         "role": cfg.get("role"),
         "load_time_sec": round(load_time, 2),
+        "device_mode": placement["device_mode"],
+        "device_map": placement["device_map"],
+        "component_placement": placement["component_placement"],
         "resolutions": {},
         "total_failures": 0,
         "samples": [],
@@ -247,7 +297,8 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
                 try:
                     import torch
                     if torch.cuda.is_available():
-                        torch.cuda.reset_peak_memory_stats()
+                        for d in range(torch.cuda.device_count()):
+                            torch.cuda.reset_peak_memory_stats(d)
                 except Exception:
                     pass
 
@@ -256,10 +307,13 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
                     out_path = engine.generate(item, out_dir)
                     dur = round(time.time() - t_gen, 2)
                     item_vram_mb = 0.0
+                    vram_per_gpu: Dict[str, float] = {}
                     try:
                         import torch
                         if torch.cuda.is_available():
-                            item_vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+                            for d in range(torch.cuda.device_count()):
+                                vram_per_gpu[f"gpu_{d}_mb"] = round(torch.cuda.max_memory_allocated(d) / (1024 * 1024), 1)
+                            item_vram_mb = max(vram_per_gpu.values()) if vram_per_gpu else 0.0
                     except Exception:
                         pass
 
@@ -272,6 +326,7 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
                         "latency_sec": dur,
                         "is_warmup": False,
                         "peak_vram_mb": item_vram_mb,
+                        "peak_vram_per_gpu": vram_per_gpu,
                         "media_type": "video",
                         "file": out_path.name if out_path else "",
                     })
@@ -307,7 +362,8 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
                 try:
                     import torch
                     if torch.cuda.is_available():
-                        torch.cuda.reset_peak_memory_stats()
+                        for d in range(torch.cuda.device_count()):
+                            torch.cuda.reset_peak_memory_stats(d)
                 except Exception:
                     pass
 
@@ -317,10 +373,13 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
                     dur = round(time.time() - t_gen, 2)
 
                     item_vram_mb = 0.0
+                    vram_per_gpu: Dict[str, float] = {}
                     try:
                         import torch
                         if torch.cuda.is_available():
-                            item_vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+                            for d in range(torch.cuda.device_count()):
+                                vram_per_gpu[f"gpu_{d}_mb"] = round(torch.cuda.max_memory_allocated(d) / (1024 * 1024), 1)
+                            item_vram_mb = max(vram_per_gpu.values()) if vram_per_gpu else 0.0
                     except Exception:
                         pass
 
@@ -336,6 +395,7 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
                         "latency_sec": dur,
                         "is_warmup": is_warmup,
                         "peak_vram_mb": item_vram_mb,
+                        "peak_vram_per_gpu": vram_per_gpu,
                         "media_type": "image",
                         "file": out_path.name if out_path else "",
                     })
@@ -344,6 +404,12 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
                     engine_results["total_failures"] += 1
 
             bench_latencies = latencies[1:] if len(latencies) > 1 else latencies
+            gpu_peaks: Dict[str, float] = {}
+            for s in engine_results["samples"]:
+                if s.get("width") == w and s.get("height") == h:
+                    for g_k, g_v in s.get("peak_vram_per_gpu", {}).items():
+                        gpu_peaks[g_k] = max(gpu_peaks.get(g_k, 0.0), g_v)
+
             engine_results["resolutions"][res_key] = {
                 "total_samples": len(latencies),
                 "warmup_seconds": latencies[0] if latencies else None,
@@ -351,6 +417,7 @@ def benchmark_single_engine(engine_id: str, cfg: Dict[str, Any], out_dir: Path) 
                 "min_seconds_per_item": round(min(bench_latencies), 2) if bench_latencies else None,
                 "max_seconds_per_item": round(max(bench_latencies), 2) if bench_latencies else None,
                 "peak_vram_mb": max(vram_measurements) if vram_measurements else None,
+                "peak_vram_per_gpu": gpu_peaks,
             }
 
     engine.unload()

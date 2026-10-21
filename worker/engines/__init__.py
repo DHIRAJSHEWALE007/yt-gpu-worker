@@ -58,3 +58,15 @@ def get_engine(engine_id: str, config: Optional[Dict[str, Any]] = None) -> Engin
         config = cfg or {}
 
     return cls(config=config)
+
+
+def load_tiers_config() -> Dict[str, Any]:
+    """Load tiers mapping and escalation order from worker/models.yaml."""
+    p_worker = Path(__file__).resolve().parent.parent / "models.yaml"
+    if p_worker.is_file():
+        try:
+            data = yaml.safe_load(p_worker.read_text(encoding="utf-8"))
+            return data.get("tiers", {}) if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.warning("Could not read tiers from worker/models.yaml: %s", e)
+    return {}

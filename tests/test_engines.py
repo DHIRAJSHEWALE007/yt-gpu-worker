@@ -162,7 +162,7 @@ def test_models_yaml_single_source_of_truth() -> None:
 
     # 1. zimage_turbo checks (Tongyi-MAI Apache-2.0, disabled on T4)
     z = models["zimage_turbo"]
-    assert z["role"] == "default_image"
+    assert z["role"] == "fallback"
     assert z["default_steps"] == 9
     assert z["default_guidance_scale"] == 0.0
     assert z["seconds_per_item"] is None
@@ -189,17 +189,19 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert st["revision"] == "71153311d3dbb46851df1931d3ca6e939de83304"
     assert st["license"] == "other" 
 
-    # 2. flux2_klein checks (confirmed 4B Apache variant)
+    # 2. flux2_klein checks (confirmed 4B Apache variant, default_image)
     f = models["flux2_klein"]
-    assert f["role"] == "hero_image"
+    assert f["role"] == "default_image"
+    assert f["recommended_dtype"] == "fp16"
     assert f["repo_id"] == "black-forest-labs/FLUX.2-klein-4B"
     assert f["revision"] == "e7b7dc27f91deacad38e78976d1f2b499d76a294"
     assert f["license"] == "Apache-2.0"
     assert f["commercial_ok"] is True
     assert f["gated"] is False
-    assert f["seconds_per_item"] == 40.0
-    assert f["load_seconds"] == 321.0
-    assert f["peak_vram_gb"] == 11.5
+    assert f["seconds_per_item"] == 15.8
+    assert f["load_seconds"] == 156.0
+    assert f["peak_vram_gb"] is None
+    assert f["parallel_mode"] == "single_process_multi_gpu"
 
     # 3. Wan 2.1 1.3B checks
     w = models["wan21_t2v_1_3b"]
@@ -219,15 +221,27 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert w5["enabled"] is False
     assert w5["min_vram_gb"] == 20.0
 
-    # 4. sdxl_lightning checks (enabled with true UNet loading)
+    # 4. sdxl_lightning checks (enabled volume_image)
     s = models["sdxl_lightning"]
-    assert s["role"] == "fallback"
+    assert s["role"] == "volume_image"
     assert s["enabled"] is True
     assert s["ram_estimate_gb"] == 12.0
+    assert s["seconds_per_item"] == 8.7
+    assert s["load_seconds"] == 105.0
+    assert "8.7 s at 1024" in s["notes"]
+    assert s["parallel_mode"] == "process_per_gpu"
     assert s["repo_id"] == "ByteDance/SDXL-Lightning"
     assert s["revision"] == "c9a24f48e1c025556787b0c58dd67a091ece2e44"
     assert s["license"] == "openrail++"
     assert s["commercial_ok"] is True
+
+    # 4b. Tiers governance checks
+    from worker.engines import load_tiers_config
+    tiers = load_tiers_config()
+    assert tiers["hero_scenes"] == "flux2_klein"
+    assert tiers["text_scenes"] == "flux2_klein"
+    assert tiers["filler_scenes"] == "sdxl_lightning"
+    assert tiers["escalation_order"] == ["sdxl_lightning", "flux2_klein"]
 
     # 5. fake mock checks
     fk = models["fake"]
@@ -300,7 +314,10 @@ def test_bakeoff_records_pipeline_class_and_revision(tmp_path: Path) -> None:
         assert len(zt["samples"]) > 0
         assert "prompt" in zt["samples"][0]
         assert "peak_vram_mb" in zt["samples"][0]
+        assert "peak_vram_per_gpu" in zt["samples"][0]
         assert "median_seconds_per_item" in zt["resolutions"]["768x768"]
+        assert "device_mode" in zt
+        assert "component_placement" in zt
 
 def test_zimage_turbo_capability_gating_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify ZImageTurboEngine refuses compute capability < 8.0 GPUs before loading weights."""
@@ -433,9 +450,14 @@ def test_sdxl_lightning_weights_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "safetensors", mock_safetensors)
     monkeypatch.setitem(sys.modules, "safetensors.torch", mock_safetensors.torch)
 
+    mock_vae = MagicMock()
+    mock_diffusers.AutoencoderKL.from_pretrained.return_value.to.return_value = mock_vae
+
     engine = SDXLLightningEngine(config={
         "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
         "repo_id": "ByteDance/SDXL-Lightning",
+        "vae_fix_model": "madebyollin/sdxl-vae-fp16-fix",
+        "vae_fix_revision": "207b116dae70ace3637169f1ddd2434b91b3a8cd",
         "files": ["sdxl_lightning_4step_unet.safetensors"],
         "recommended_dtype": "fp16",
     })
@@ -447,4 +469,5 @@ def test_sdxl_lightning_weights_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mock_unet.load_state_dict.call_count == 1
     mock_unet.load_state_dict.assert_called_with({"unet_weight": "tensor_mock"})
     assert engine.lightning_weights_loaded is True
+    assert mock_diffusers.AutoencoderKL.from_pretrained.call_count == 1
     assert mock_scheduler_cls.from_config.call_count == 1

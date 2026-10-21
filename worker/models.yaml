@@ -1,25 +1,22 @@
-# yt-gpu-worker: Model Registry & Governance
-# Single source of truth for engines, licenses, revisions, roles, and resource profiles.
-
 models:
   zimage_turbo:
-    name: "Z-Image-Turbo (Tongyi-MAI)"
-    role: "default_image"
+    name: Z-Image-Turbo (Tongyi-MAI)
+    role: fallback
     hero_only: false
     test_only: false
-    repo_id: "Tongyi-MAI/Z-Image-Turbo"
-    revision: "f332072aa78be7aecdf3ee76d5c247082da564a6"
+    repo_id: Tongyi-MAI/Z-Image-Turbo
+    revision: f332072aa78be7aecdf3ee76d5c247082da564a6
     files:
-      - "transformer/diffusion_pytorch_model-00001-of-00003.safetensors"
-      - "transformer/diffusion_pytorch_model-00002-of-00003.safetensors"
-      - "transformer/diffusion_pytorch_model-00003-of-00003.safetensors"
-    license: "Apache-2.0"
+    - transformer/diffusion_pytorch_model-00001-of-00003.safetensors
+    - transformer/diffusion_pytorch_model-00002-of-00003.safetensors
+    - transformer/diffusion_pytorch_model-00003-of-00003.safetensors
+    license: Apache-2.0
     commercial_ok: true
     min_vram_gb: 8.0
     ram_estimate_gb: 16.0
     min_compute_capability: 8.0
     requires_native_bf16: true
-    recommended_dtype: "bf16"
+    recommended_dtype: bf16
     default_steps: 9
     default_guidance_scale: 0.0
     seconds_per_item: null
@@ -27,54 +24,61 @@ models:
     peak_vram_gb: null
     gated: false
     enabled: false
-    notes: "Requires native bf16 (compute capability >= 8.0). Produces NaN in fp16 on Turing (T4) or Pascal (P100). Disabled by default on T4."
-    description: "High-efficiency 9-step distilled DiT text-to-image foundation model."
-
+    notes: Requires native bf16 (compute capability >= 8.0). Produces NaN in fp16
+      on Turing (T4) or Pascal (P100). Disabled by default on T4.
+    description: High-efficiency 9-step distilled DiT text-to-image foundation model.
   sdxl_lightning:
-    name: "SDXL Lightning (4-step)"
-    role: "fallback"
+    name: SDXL Lightning (4-step)
+    role: volume_image
     hero_only: false
     test_only: false
-    repo_id: "ByteDance/SDXL-Lightning"
-    revision: "c9a24f48e1c025556787b0c58dd67a091ece2e44"
-    base_model: "stabilityai/stable-diffusion-xl-base-1.0"
-    base_revision: "462165984030d82259a11f4367a4eed129e94a7b"
-    vae_fix_model: "madebyollin/sdxl-vae-fp16-fix"
+    repo_id: ByteDance/SDXL-Lightning
+    revision: c9a24f48e1c025556787b0c58dd67a091ece2e44
+    base_model: stabilityai/stable-diffusion-xl-base-1.0
+    base_revision: 462165984030d82259a11f4367a4eed129e94a7b
+    vae_fix_model: madebyollin/sdxl-vae-fp16-fix
     files:
-      - "sdxl_lightning_4step_unet.safetensors"
-    license: "openrail++"
+    - sdxl_lightning_4step_unet.safetensors
+    license: openrail++
     commercial_ok: true
     min_vram_gb: 8.0
     ram_estimate_gb: 12.0
     min_compute_capability: 7.0
     requires_native_bf16: false
-    recommended_dtype: "fp16"
+    recommended_dtype: fp16
     default_steps: 4
     default_guidance_scale: 0.0
-    seconds_per_item: 4.2
-    load_seconds: 35.0
+    seconds_per_item: 8.7
+    load_seconds: 105.0
     peak_vram_gb: 7.8
     gated: false
     enabled: true
-    notes: "ByteDance SDXL-Lightning 4-step UNet fused with SDXL Base 1.0 in fp16. Fast 4-step generation with trailing timestep spacing."
-    description: "Fast 4-step distilled UNet based on SDXL for photorealistic images on 8GB-16GB GPUs."
-
+    notes: fixed UNet loading; fp16; ~8.7 s at 1024
+    description: Fast 4-step distilled UNet based on SDXL for photorealistic images
+      on 8GB-16GB GPUs.
+    seconds_per_resolution:
+      768x768: 6.4
+      1024x1024: 8.7
+      832x1216: 9.1
+    parallel_mode: process_per_gpu
+    vae_fix_revision: 207b116dae70ace3637169f1ddd2434b91b3a8cd
+    vae_fix_license: MIT
   sdxl_turbo:
-    name: "SDXL-Turbo (Stability AI)"
-    role: "test_only_noncommercial"
+    name: SDXL-Turbo (Stability AI)
+    role: test_only_noncommercial
     hero_only: false
     test_only: true
-    repo_id: "stabilityai/sdxl-turbo"
-    revision: "71153311d3dbb46851df1931d3ca6e939de83304"
+    repo_id: stabilityai/sdxl-turbo
+    revision: 71153311d3dbb46851df1931d3ca6e939de83304
     files:
-      - "sd_xl_turbo_1.0_fp16.safetensors"
-    license: "other"
+    - sd_xl_turbo_1.0_fp16.safetensors
+    license: other
     commercial_ok: false
     min_vram_gb: 7.0
     ram_estimate_gb: 10.0
     min_compute_capability: 7.0
     requires_native_bf16: false
-    recommended_dtype: "fp16"
+    recommended_dtype: fp16
     default_steps: 1
     default_guidance_scale: 0.0
     seconds_per_item: null
@@ -82,51 +86,58 @@ models:
     peak_vram_gb: null
     gated: false
     enabled: false
-    notes: "Non-commercial test engine (Stability AI Creative Commons NC license). Refused unless --allow-noncommercial."
-    description: "Single-step real-time distilled diffusion model for non-commercial evaluation."
-
+    notes: Non-commercial test engine (Stability AI Creative Commons NC license).
+      Refused unless --allow-noncommercial.
+    description: Single-step real-time distilled diffusion model for non-commercial
+      evaluation.
   flux2_klein:
-    name: "FLUX.2 Klein 4B"
-    role: "hero_image"
+    name: FLUX.2 Klein 4B
+    role: default_image
     hero_only: false
     test_only: false
-    repo_id: "black-forest-labs/FLUX.2-klein-4B"
-    revision: "e7b7dc27f91deacad38e78976d1f2b499d76a294"
+    repo_id: black-forest-labs/FLUX.2-klein-4B
+    revision: e7b7dc27f91deacad38e78976d1f2b499d76a294
     files:
-      - "flux-2-klein-4b.safetensors"
-    license: "Apache-2.0"
+    - flux-2-klein-4b.safetensors
+    license: Apache-2.0
     commercial_ok: true
     min_vram_gb: 10.0
     ram_estimate_gb: 16.0
     min_compute_capability: 7.5
     requires_native_bf16: false
-    recommended_dtype: "fp8"
+    recommended_dtype: fp16
     default_steps: 4
     default_guidance_scale: 0.0
-    seconds_per_item: 40.0
-    load_seconds: 321.0
-    peak_vram_gb: 11.5
+    seconds_per_item: 15.8
+    load_seconds: 156.0
+    peak_vram_gb: null
     gated: false
     enabled: true
-    notes: "Hero image engine using FLUX.2 Klein 4B Apache-2.0 variant (3.88B params). High prompt adherence without gated license."
-    description: "Quantized 4-step rectified flow transformer (4B Apache variant) for hero stills."
-
+    notes: Hero image engine using FLUX.2 Klein 4B Apache-2.0 variant (3.88B params).
+      High prompt adherence without gated license.
+    description: Quantized 4-step rectified flow transformer (4B Apache variant) for
+      hero stills.
+    seconds_per_resolution:
+      768x768: 10.6
+      1024x1024: 15.8
+      832x1216: 16.1
+    parallel_mode: single_process_multi_gpu
   wan21_t2v_1_3b:
-    name: "Wan 2.1 1.3B Text-to-Video"
-    role: "hero_clip"
+    name: Wan 2.1 1.3B Text-to-Video
+    role: hero_clip
     hero_only: true
     test_only: false
-    repo_id: "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
-    revision: "0fad780a534b6463e45facd96134c9f345acfa5b"
+    repo_id: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+    revision: 0fad780a534b6463e45facd96134c9f345acfa5b
     files:
-      - "diffusion_pytorch_model.safetensors"
-    license: "Apache-2.0"
+    - diffusion_pytorch_model.safetensors
+    license: Apache-2.0
     commercial_ok: true
     min_vram_gb: 12.0
     ram_estimate_gb: 18.0
     min_compute_capability: 7.5
     requires_native_bf16: false
-    recommended_dtype: "fp16"
+    recommended_dtype: fp16
     default_steps: 25
     default_guidance_scale: 5.0
     seconds_per_item: 390.0
@@ -134,24 +145,23 @@ models:
     peak_vram_gb: 13.0
     gated: false
     enabled: true
-    notes: "Hero video engine for dynamic 480p motion clips using Wan 2.1 1.3B Diffusers."
-    description: "High quality 480p text-to-video diffusion pipeline for hero b-roll."
-
+    notes: Hero video engine for dynamic 480p motion clips using Wan 2.1 1.3B Diffusers.
+    description: High quality 480p text-to-video diffusion pipeline for hero b-roll.
   wan22_ti2v5b:
-    name: "Wan 2.2 5B Text/Image-to-Video"
-    role: "hero_clip"
+    name: Wan 2.2 5B Text/Image-to-Video
+    role: hero_clip
     hero_only: true
     test_only: false
-    repo_id: "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    repo_id: Wan-AI/Wan2.2-TI2V-5B-Diffusers
     revision: null
     files: []
-    license: "Apache-2.0"
+    license: Apache-2.0
     commercial_ok: true
     min_vram_gb: 20.0
     ram_estimate_gb: 28.0
     min_compute_capability: 8.0
     requires_native_bf16: true
-    recommended_dtype: "fp16"
+    recommended_dtype: fp16
     default_steps: 30
     default_guidance_scale: 6.0
     seconds_per_item: null
@@ -159,24 +169,23 @@ models:
     peak_vram_gb: null
     gated: false
     enabled: false
-    notes: "Placeholder for upcoming 5B model. Disabled until released and benchmarked."
-    description: "Future high-capacity 5B text-to-video diffusion pipeline."
-
+    notes: Placeholder for upcoming 5B model. Disabled until released and benchmarked.
+    description: Future high-capacity 5B text-to-video diffusion pipeline.
   fake:
-    name: "CPU Mock Engine"
-    role: "test"
+    name: CPU Mock Engine
+    role: test
     hero_only: false
     test_only: true
-    repo_id: "local/mock"
+    repo_id: local/mock
     revision: null
     files: []
-    license: "MIT"
+    license: MIT
     commercial_ok: true
     min_vram_gb: 0.0
     ram_estimate_gb: 0.1
     min_compute_capability: 0.0
     requires_native_bf16: false
-    recommended_dtype: "cpu"
+    recommended_dtype: cpu
     default_steps: 1
     default_guidance_scale: 1.0
     seconds_per_item: 0.01
@@ -184,5 +193,14 @@ models:
     peak_vram_gb: null
     gated: false
     enabled: false
-    notes: "Mock CPU engine generating miniature PNG/MP4. Runner refuses unless STUDIO_FAKE_PROVIDERS=1 or --test."
-    description: "Mock CPU engine for unit tests and local development."
+    notes: Mock CPU engine generating miniature PNG/MP4. Runner refuses unless STUDIO_FAKE_PROVIDERS=1
+      or --test.
+    description: Mock CPU engine for unit tests and local development.
+    parallel_mode: process_per_gpu
+tiers:
+  hero_scenes: flux2_klein
+  text_scenes: flux2_klein
+  filler_scenes: sdxl_lightning
+  escalation_order:
+  - sdxl_lightning
+  - flux2_klein

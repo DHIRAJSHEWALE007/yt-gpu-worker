@@ -1,0 +1,215 @@
+{
+  "pack_id": "style_and_explainer_test_pack",
+  "output_dir": "./outputs/style_test",
+  "max_runtime_minutes": 30.0,
+  "items": [
+    {
+      "id": "style_sdxl_01",
+      "engine": "sdxl_lightning",
+      "prompt": "A futuristic automated cargo ship crossing the ocean at sunset, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5001,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Autonomous Ocean Cargo Ship"
+      }
+    },
+    {
+      "id": "style_sdxl_02",
+      "engine": "sdxl_lightning",
+      "prompt": "A cybersecurity specialist analyzing holographic network topologies in a modern operations center, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5002,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Cybersecurity Operations Center"
+      }
+    },
+    {
+      "id": "style_sdxl_03",
+      "engine": "sdxl_lightning",
+      "prompt": "Solar energy farm with futuristic battery storage towers in an arid desert landscape, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5003,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Desert Solar and Battery Grid"
+      }
+    },
+    {
+      "id": "style_sdxl_04",
+      "engine": "sdxl_lightning",
+      "prompt": "A modern vertical hydroponic urban farming warehouse with robotic automated harvesting arms, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5004,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Vertical Hydroponic Warehouse"
+      }
+    },
+    {
+      "id": "style_sdxl_05",
+      "engine": "sdxl_lightning",
+      "prompt": "A high-speed maglev train traveling through a mountain gorge between wind turbines, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5005,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Mountain Maglev Corridor"
+      }
+    },
+    {
+      "id": "style_sdxl_06",
+      "engine": "sdxl_lightning",
+      "prompt": "An educational cross-section diagram showing tectonic subduction causing volcanic eruptions, labeled geological layers, clean vector infographic, technical illustration",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5006,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram",
+        "title": "Tectonic Subduction & Volcanism"
+      }
+    },
+    {
+      "id": "style_sdxl_07",
+      "engine": "sdxl_lightning",
+      "prompt": "An isometric flowchart diagram illustrating distributed computing consensus algorithms, interconnected nodes with packet flows, clean vector schematic",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5007,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram",
+        "title": "Distributed Consensus Architecture"
+      }
+    },
+    {
+      "id": "style_sdxl_08",
+      "engine": "sdxl_lightning",
+      "prompt": "A detailed anatomical cross-section diagram of the human eye focusing light rays through the crystalline lens onto the retina, educational medical infographic",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5008,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram",
+        "title": "Human Eye Optical Optics"
+      }
+    },
+    {
+      "id": "style_flux_01",
+      "engine": "flux2_klein",
+      "prompt": "A futuristic automated cargo ship crossing the ocean at sunset, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5001,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Autonomous Ocean Cargo Ship"
+      }
+    },
+    {
+      "id": "style_flux_02",
+      "engine": "flux2_klein",
+      "prompt": "A cybersecurity specialist analyzing holographic network topologies in a modern operations center, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5002,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Cybersecurity Operations Center"
+      }
+    },
+    {
+      "id": "style_flux_03",
+      "engine": "flux2_klein",
+      "prompt": "Solar energy farm with futuristic battery storage towers in an arid desert landscape, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5003,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Desert Solar and Battery Grid"
+      }
+    },
+    {
+      "id": "style_flux_04",
+      "engine": "flux2_klein",
+      "prompt": "A modern vertical hydroponic urban farming warehouse with robotic automated harvesting arms, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5004,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Vertical Hydroponic Warehouse"
+      }
+    },
+    {
+      "id": "style_flux_05",
+      "engine": "flux2_klein",
+      "prompt": "A high-speed maglev train traveling through a mountain gorge between wind turbines, flat vector illustration, consistent teal and orange palette, no text, no logos",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5005,
+      "media_type": "image",
+      "extra_params": {
+        "category": "channel_style",
+        "title": "Mountain Maglev Corridor"
+      }
+    },
+    {
+      "id": "style_flux_06",
+      "engine": "flux2_klein",
+      "prompt": "An educational cross-section diagram showing tectonic subduction causing volcanic eruptions, labeled geological layers, clean vector infographic, technical illustration",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5006,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram",
+        "title": "Tectonic Subduction & Volcanism"
+      }
+    },
+    {
+      "id": "style_flux_07",
+      "engine": "flux2_klein",
+      "prompt": "An isometric flowchart diagram illustrating distributed computing consensus algorithms, interconnected nodes with packet flows, clean vector schematic",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5007,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram",
+        "title": "Distributed Consensus Architecture"
+      }
+    },
+    {
+      "id": "style_flux_08",
+      "engine": "flux2_klein",
+      "prompt": "A detailed anatomical cross-section diagram of the human eye focusing light rays through the crystalline lens onto the retina, educational medical infographic",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5008,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram",
+        "title": "Human Eye Optical Optics"
+      }
+    }
+  ]
+}
