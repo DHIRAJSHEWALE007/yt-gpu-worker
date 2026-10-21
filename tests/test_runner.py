@@ -151,3 +151,36 @@ def test_runner_refuses_noncommercial_engine_without_flag_or_env(tmp_path: Path,
     monkeypatch.setenv("STUDIO_ALLOW_NONCOMMERCIAL", "1")
     runner_env = PackRunner(pack, output_dir=tmp_path / "nc_out", allow_noncommercial=False)
     assert runner_env.allow_noncommercial is False
+
+
+def test_cli_runner_subprocess_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify executing worker.runner CLI as a subprocess correctly parses --results and writes results."""
+    import os
+    import subprocess
+    import sys
+    from worker.schema import Item, Pack, load_results
+
+    monkeypatch.setenv("STUDIO_FAKE_PROVIDERS", "1")
+    items = [Item(id="cli_sub_item", engine="fake", prompt="CLI subprocess test")]
+    sub_pack = Pack(pack_id="cli_test_pack", items=items, output_dir=str(tmp_path))
+    pack_file = tmp_path / "sub_pack.json"
+    pack_file.write_text(sub_pack.model_dump_json(indent=2), encoding="utf-8")
+    custom_results_path = tmp_path / "custom_results.json"
+
+    env = os.environ.copy()
+    env["STUDIO_FAKE_PROVIDERS"] = "1"
+    cmd = [
+        sys.executable,
+        "-m", "worker.runner",
+        "--pack", str(pack_file),
+        "--out", str(tmp_path),
+        "--results", str(custom_results_path),
+        "--test",
+    ]
+    res = subprocess.run(cmd, env=env, check=True)
+    assert res.returncode == 0
+    assert custom_results_path.is_file()
+    results = load_results(custom_results_path)
+    assert len(results) == 1
+    assert results[0].item_id == "cli_sub_item"
+    assert results[0].status == "success"

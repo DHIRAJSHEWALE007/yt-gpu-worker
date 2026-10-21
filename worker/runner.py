@@ -480,7 +480,7 @@ def run_pack(
         import subprocess
         from concurrent.futures import ThreadPoolExecutor
 
-        def _execute_worker_process(gpu_idx: int, sub_items: List[Item]) -> None:
+        def _execute_worker_process(gpu_idx: int, sub_items: List[Item]) -> List[Result]:
             sub_pack = pack.model_copy(update={"items": sub_items, "pack_id": f"{pack.pack_id}_gpu{gpu_idx}"})
             sub_pack_path = target_out / f".temp_pack_gpu{gpu_idx}.json"
             sub_pack_path.write_text(sub_pack.model_dump_json(indent=2), encoding="utf-8")
@@ -505,11 +505,11 @@ def run_pack(
             child_env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
             try:
                 subprocess.run(cmd, env=child_env, check=True)
+                part_results: List[Result] = []
                 if part_res_path.is_file():
                     part_results = load_results(part_res_path)
-                    for r in part_results:
-                        append_result_atomic(r, target_res)
                     part_res_path.unlink()
+                return part_results
             finally:
                 if sub_pack_path.is_file():
                     sub_pack_path.unlink()
@@ -517,7 +517,9 @@ def run_pack(
         with ThreadPoolExecutor(max_workers=len(partitions)) as executor:
             futures = [executor.submit(_execute_worker_process, g_idx, items) for g_idx, items in partitions.items() if items]
             for f in futures:
-                f.result()
+                worker_results = f.result()
+                for r in worker_results:
+                    append_result_atomic(r, target_res)
 
     final_results = load_results(target_res)
     return final_results if final_results else all_results
@@ -531,6 +533,7 @@ if __name__ == "__main__":
     parser.add_argument("--pack", type=str, default="tests/sample_pack.json", help="Path to pack.json")
     parser.add_argument("--engine", type=str, default=None, help="Override engine for all items (e.g. fake, sdxl_lightning)")
     parser.add_argument("--out", type=str, default="./out", help="Output directory for rendered assets and results.json")
+    parser.add_argument("--results", type=str, default=None, help="Explicit path for results JSON output file")
     parser.add_argument("--gpus", type=int, nargs="*", default=None, help="GPU device indices to use")
     parser.add_argument("--test", action="store_true", help="Allow test_only mock engines (e.g. fake)")
     parser.add_argument("--allow-noncommercial", action="store_true", help="Allow engines with commercial_ok: false (e.g. sdxl_turbo)")
@@ -562,6 +565,7 @@ if __name__ == "__main__":
     results = run_pack(
         loaded_pack,
         output_dir=target_out,
+        results_file=Path(args.results) if args.results else None,
         gpu_indices=args.gpus,
         allow_test_engines=args.test,
         allow_noncommercial=args.allow_noncommercial,
