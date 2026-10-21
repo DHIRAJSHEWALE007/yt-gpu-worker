@@ -54,7 +54,7 @@ class ZImageTurboEngine(Engine):
 
         import torch
 
-        steps = item.steps or 1
+        steps = item.steps or 4
         guidance = item.guidance_scale if item.guidance_scale is not None else 0.0
 
         generator = None
