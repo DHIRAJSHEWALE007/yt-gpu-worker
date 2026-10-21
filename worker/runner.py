@@ -94,6 +94,7 @@ class PackRunner:
         results_file: Optional[Path] = None,
         gpu_index: int = 0,
         allow_test_engines: bool = False,
+        allow_noncommercial: bool = False,
     ) -> None:
         self.pack = pack
         self.output_dir = output_dir or Path(pack.output_dir)
@@ -102,6 +103,7 @@ class PackRunner:
         self.results_file = results_file or (self.output_dir / "results.json")
         self.gpu_index = gpu_index
         self.allow_test_engines = allow_test_engines
+        self.allow_noncommercial = allow_noncommercial
         self.models_config = _load_models_config()
 
         self.start_time = time.time()
@@ -169,15 +171,24 @@ class PackRunner:
             cfg = self.models_config.get("wan22_ti2v5b", {})
         cfg = cfg or {}
 
-        # Refuse test_only engines unless STUDIO_FAKE_PROVIDERS=1 or allow_test_engines is True
+        # Refuse test_only and commercial_ok=false engines unless explicitly permitted
         is_test_mode = (
             os.environ.get("STUDIO_FAKE_PROVIDERS") in ("1", "true", "True")
             or getattr(self, "allow_test_engines", False)
+        )
+        is_noncommercial_mode = (
+            os.environ.get("STUDIO_ALLOW_NONCOMMERCIAL") in ("1", "true", "True")
+            or getattr(self, "allow_noncommercial", False)
         )
         if cfg.get("test_only", False) and not is_test_mode:
             raise ValueError(
                 f"Engine '{engine_id}' is marked as test_only. "
                 f"Execution refused unless STUDIO_FAKE_PROVIDERS=1 is set or --test flag is provided."
+            )
+        if cfg.get("commercial_ok") is False and not is_noncommercial_mode:
+            raise ValueError(
+                f"Engine '{engine_id}' has commercial_ok=false (license: {cfg.get('license', 'unknown')}). "
+                f"Execution refused unless --allow-noncommercial flag or STUDIO_ALLOW_NONCOMMERCIAL=1 is passed."
             )
 
         engine = get_engine(engine_id, config=cfg)
@@ -229,10 +240,14 @@ class PackRunner:
 
     def run(self) -> List[Result]:
         """Execute full pack workload and return list of Results."""
-        # Validate that test_only engines are permitted upfront
+        # Validate that test_only and commercial_ok constraints are met upfront
         is_test_mode = (
             os.environ.get("STUDIO_FAKE_PROVIDERS") in ("1", "true", "True")
             or getattr(self, "allow_test_engines", False)
+        )
+        is_noncommercial_mode = (
+            os.environ.get("STUDIO_ALLOW_NONCOMMERCIAL") in ("1", "true", "True")
+            or getattr(self, "allow_noncommercial", False)
         )
         for it in self.pack.items:
             cfg = self.models_config.get(it.engine)
@@ -245,6 +260,11 @@ class PackRunner:
                 raise ValueError(
                     f"Engine '{it.engine}' is marked as test_only. "
                     f"Execution refused unless STUDIO_FAKE_PROVIDERS=1 is set or --test flag is provided."
+                )
+            if cfg.get("commercial_ok") is False and not is_noncommercial_mode:
+                raise ValueError(
+                    f"Engine '{it.engine}' has commercial_ok=false (license: {cfg.get('license', 'unknown')}). "
+                    f"Execution refused unless --allow-noncommercial flag or STUDIO_ALLOW_NONCOMMERCIAL=1 is passed."
                 )
 
         heartbeat = HeartbeatMonitor(self, interval_seconds=30.0)
@@ -356,6 +376,7 @@ def run_pack(
     results_file: Optional[Path] = None,
     gpu_indices: Optional[List[int]] = None,
     allow_test_engines: bool = False,
+    allow_noncommercial: bool = False,
 ) -> List[Result]:
     """Top-level entrypoint to execute a Pack.
     
@@ -371,6 +392,7 @@ def run_pack(
             results_file=results_file,
             gpu_index=available_indices[0],
             allow_test_engines=allow_test_engines,
+            allow_noncommercial=allow_noncommercial,
         )
         return runner.run()
 
@@ -399,6 +421,7 @@ def run_pack(
             results_file=target_res,
             gpu_index=gpu_idx,
             allow_test_engines=allow_test_engines,
+            allow_noncommercial=allow_noncommercial,
         )
         res = runner.run()
         all_results.extend(res)
@@ -417,6 +440,7 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=str, default="./out", help="Output directory for rendered assets and results.json")
     parser.add_argument("--gpus", type=int, nargs="*", default=None, help="GPU device indices to use")
     parser.add_argument("--test", action="store_true", help="Allow test_only mock engines (e.g. fake)")
+    parser.add_argument("--allow-noncommercial", action="store_true", help="Allow engines with commercial_ok: false (e.g. sdxl_turbo)")
 
     args = parser.parse_args()
 
@@ -440,7 +464,7 @@ if __name__ == "__main__":
     target_out = Path(args.out)
     target_out.mkdir(parents=True, exist_ok=True)
 
-    results = run_pack(loaded_pack, output_dir=target_out, gpu_indices=args.gpus, allow_test_engines=args.test)
+    results = run_pack(loaded_pack, output_dir=target_out, gpu_indices=args.gpus, allow_test_engines=args.test, allow_noncommercial=args.allow_noncommercial)
     print(f"\nExecution complete! Rendered {len(results)} items into {target_out.resolve()}:")
     for r in results:
         status_symbol = "[OK]" if r.status in ("success", "skipped") else "[FAILED]"

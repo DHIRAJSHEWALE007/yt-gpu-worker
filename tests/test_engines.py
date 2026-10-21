@@ -153,24 +153,36 @@ def test_models_yaml_single_source_of_truth() -> None:
 
     models = load_models_config()
     assert "zimage_turbo" in models
+    assert "sdxl_turbo" in models
     assert "flux2_klein" in models
     assert "wan21_t2v_1_3b" in models
+    assert "wan22_ti2v5b" in models
     assert "sdxl_lightning" in models
     assert "fake" in models
 
-    # 1. zimage_turbo checks
+    # 1. zimage_turbo checks (Tongyi-MAI Apache-2.0)
     z = models["zimage_turbo"]
     assert z["role"] == "default_image"
     assert z["default_steps"] == 9
     assert z["default_guidance_scale"] == 0.0
     assert z["seconds_per_item"] == 8.5
     assert z["load_seconds"] == 38.0
-    assert z["repo_id"] == "stabilityai/sdxl-turbo"
-    assert z["revision"] == "71153311d3dbb46851df1931d3ca6e939de83304"
-    assert z["license"] == "other"
-    assert z["commercial_ok"] is False
+    assert z["repo_id"] == "Tongyi-MAI/Z-Image-Turbo"
+    assert z["revision"] == "f332072aa78be7aecdf3ee76d5c247082da564a6"
+    assert z["license"] == "Apache-2.0"
+    assert z["commercial_ok"] is True
     assert z["hero_only"] is False
     assert z["test_only"] is False
+
+    # 1b. sdxl_turbo checks (Stability AI non-commercial)
+    st = models["sdxl_turbo"]
+    assert st["role"] == "test_only_noncommercial"
+    assert st["commercial_ok"] is False
+    assert st["enabled"] is False
+    assert st["test_only"] is True
+    assert st["repo_id"] == "stabilityai/sdxl-turbo"
+    assert st["revision"] == "71153311d3dbb46851df1931d3ca6e939de83304"
+    assert st["license"] == "other" 
 
     # 2. flux2_klein checks (confirmed 4B Apache variant)
     f = models["flux2_klein"]
@@ -195,6 +207,12 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert w["commercial_ok"] is True
     assert w["seconds_per_item"] == 390.0
     assert w["load_seconds"] == 261.0
+    assert w["peak_vram_gb"] == 13.0
+
+    # 3b. Wan 2.2 5B placeholder checks
+    w5 = models["wan22_ti2v5b"]
+    assert w5["enabled"] is False
+    assert w5["min_vram_gb"] == 20.0
 
     # 4. sdxl_lightning checks
     s = models["sdxl_lightning"]
@@ -230,6 +248,7 @@ def test_no_hardcoded_repo_ids_in_engine_files() -> None:
         "black-forest-labs/",
         "ByteDance/",
         "Wan-AI/",
+        "Tongyi-MAI/",
         "CompVis/",
         "runwayml/",
     )
@@ -247,3 +266,32 @@ def test_no_hardcoded_repo_ids_in_engine_files() -> None:
                             f"Engine file '{py_file.name}' hardcodes Hugging Face repo ID '{val}'! "
                             f"All repo IDs must be configured exclusively in worker/models.yaml."
                         )
+
+def test_bakeoff_records_pipeline_class_and_revision(tmp_path: Path) -> None:
+    """Verify bakeoff records pipeline_class and revision in bakeoff.json."""
+    import json
+    from unittest.mock import MagicMock, patch
+    from notebooks.bakeoff import run_bakeoff
+
+    mock_engine = MagicMock()
+    mock_pipe = MagicMock()
+    mock_pipe.__class__.__name__ = "ZImagePipeline"
+    mock_engine.pipe = mock_pipe
+    mock_engine.generate.side_effect = lambda it, out_dir: (out_dir / f"{it.id}.png")
+
+    out_dir = tmp_path / "bakeoff_verify"
+    with patch("notebooks.bakeoff.get_engine", return_value=mock_engine):
+        run_bakeoff(output_dir=out_dir, engines_to_test=["zimage_turbo"])
+        bakeoff_json = out_dir / "bakeoff.json"
+        assert bakeoff_json.is_file()
+        data = json.loads(bakeoff_json.read_text(encoding="utf-8"))
+
+        assert "zimage_turbo" in data
+        zt = data["zimage_turbo"]
+        assert zt["pipeline_class"] == "ZImagePipeline"
+        assert zt["repo_id"] == "Tongyi-MAI/Z-Image-Turbo"
+        assert zt["revision"] == "f332072aa78be7aecdf3ee76d5c247082da564a6"
+        assert len(zt["samples"]) > 0
+        assert "prompt" in zt["samples"][0]
+        assert "peak_vram_mb" in zt["samples"][0]
+        assert "median_seconds_per_item" in zt["resolutions"]["768x768"]

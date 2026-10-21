@@ -3,17 +3,19 @@
 
 models:
   zimage_turbo:
-    name: "SDXL-Turbo / Fast Distilled Image"
+    name: "Z-Image-Turbo (Tongyi-MAI)"
     role: "default_image"
     hero_only: false
     test_only: false
-    repo_id: "stabilityai/sdxl-turbo"
-    revision: "71153311d3dbb46851df1931d3ca6e939de83304"
+    repo_id: "Tongyi-MAI/Z-Image-Turbo"
+    revision: "f332072aa78be7aecdf3ee76d5c247082da564a6"
     files:
-      - "sd_xl_turbo_1.0_fp16.safetensors"
-    license: "other"
-    commercial_ok: false
-    min_vram_gb: 7.0
+      - "transformer/diffusion_pytorch_model-00001-of-00003.safetensors"
+      - "transformer/diffusion_pytorch_model-00002-of-00003.safetensors"
+      - "transformer/diffusion_pytorch_model-00003-of-00003.safetensors"
+    license: "Apache-2.0"
+    commercial_ok: true
+    min_vram_gb: 8.0
     recommended_dtype: "fp16"
     default_steps: 9
     default_guidance_scale: 0.0
@@ -22,8 +24,31 @@ models:
     peak_vram_gb: null
     gated: false
     enabled: true
-    notes: "Default image engine for rapid preview; tuned to 9 steps and 0.0 guidance scale."
-    description: "Single-step real-time distilled diffusion model for rapid preview rendering."
+    notes: "Tongyi-MAI Apache-2.0 9-step distilled DiT pipeline. Tuned for 9 steps and 0.0 guidance scale."
+    description: "High-efficiency 9-step distilled DiT text-to-image foundation model."
+
+  sdxl_turbo:
+    name: "SDXL-Turbo (Stability AI)"
+    role: "test_only_noncommercial"
+    hero_only: false
+    test_only: true
+    repo_id: "stabilityai/sdxl-turbo"
+    revision: "71153311d3dbb46851df1931d3ca6e939de83304"
+    files:
+      - "sd_xl_turbo_1.0_fp16.safetensors"
+    license: "other"
+    commercial_ok: false
+    min_vram_gb: 7.0
+    recommended_dtype: "fp16"
+    default_steps: 1
+    default_guidance_scale: 0.0
+    seconds_per_item: null
+    load_seconds: null
+    peak_vram_gb: null
+    gated: false
+    enabled: false
+    notes: "Non-commercial test engine (Stability AI Creative Commons NC license). Refused unless --allow-noncommercial."
+    description: "Single-step real-time distilled diffusion model for non-commercial evaluation."
 
   flux2_klein:
     name: "FLUX.2 Klein 4B"
@@ -65,11 +90,33 @@ models:
     default_guidance_scale: 5.0
     seconds_per_item: 390.0
     load_seconds: 261.0
-    peak_vram_gb: null
+    peak_vram_gb: 13.0
     gated: false
     enabled: true
     notes: "Hero video engine for dynamic 480p motion clips using Wan 2.1 1.3B Diffusers."
     description: "High quality 480p text-to-video diffusion pipeline for hero b-roll."
+
+  wan22_ti2v5b:
+    name: "Wan 2.2 5B Text/Image-to-Video"
+    role: "hero_clip"
+    hero_only: true
+    test_only: false
+    repo_id: "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    revision: null
+    files: []
+    license: "Apache-2.0"
+    commercial_ok: true
+    min_vram_gb: 20.0
+    recommended_dtype: "fp16"
+    default_steps: 30
+    default_guidance_scale: 6.0
+    seconds_per_item: null
+    load_seconds: null
+    peak_vram_gb: null
+    gated: false
+    enabled: false
+    notes: "Placeholder for upcoming 5B model. Disabled until released and benchmarked."
+    description: "Future high-capacity 5B text-to-video diffusion pipeline."
 
   sdxl_lightning:
     name: "SDXL Lightning (4-step)"

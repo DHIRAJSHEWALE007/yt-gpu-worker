@@ -193,15 +193,6 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
             continue
 
         logger.info("=== Running Bakeoff for Engine: %s ===", engine_id)
-        engine_results: Dict[str, Any] = {
-            "engine_id": engine_id,
-            "repo_id": cfg.get("repo_id"),
-            "revision": cfg.get("revision"),
-            "role": cfg.get("role"),
-            "resolutions": {},
-            "total_failures": 0,
-            "samples": [],
-        }
 
         # 1. Load benchmark
         t0 = time.time()
@@ -214,7 +205,27 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
             continue
 
         load_time = time.time() - t0
-        engine_results["load_time_sec"] = round(load_time, 2)
+        pipe_obj = getattr(engine, "pipe", None)
+        pipe_class_name = pipe_obj.__class__.__name__ if pipe_obj is not None else engine.__class__.__name__
+
+        engine_results: Dict[str, Any] = {
+            "engine_id": engine_id,
+            "pipeline_class": pipe_class_name,
+            "repo_id": cfg.get("repo_id"),
+            "revision": cfg.get("revision"),
+            "role": cfg.get("role"),
+            "load_time_sec": round(load_time, 2),
+            "resolutions": {},
+            "total_failures": 0,
+            "samples": [],
+        }
+        logger.info(
+            "Engine %s loaded successfully | Pipeline: %s | Revision: %s | Load time: %.2fs",
+            engine_id,
+            pipe_class_name,
+            cfg.get("revision"),
+            load_time,
+        )
 
         # 2. Benchmark fixed resolutions across 5 prompts and seeds
         is_video = (cfg.get("role") == "hero_clip" or engine_id in ("wan21_t2v_1_3b", "wan22_ti2v5b"))

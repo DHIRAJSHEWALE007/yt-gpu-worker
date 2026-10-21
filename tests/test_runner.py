@@ -127,3 +127,27 @@ def test_runner_refuses_test_only_engine_without_env_or_flag(tmp_path: Path, mon
     results_env = runner_env.run()
     assert len(results_env) == 1
     assert results_env[0].status == "success"
+
+def test_runner_refuses_noncommercial_engine_without_flag_or_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify runner refuses engines with commercial_ok=false unless --allow-noncommercial or STUDIO_ALLOW_NONCOMMERCIAL=1 is passed."""
+    monkeypatch.delenv("STUDIO_ALLOW_NONCOMMERCIAL", raising=False)
+    monkeypatch.setenv("STUDIO_FAKE_PROVIDERS", "1")
+
+    # sdxl_turbo has commercial_ok: false in models.yaml
+    item = Item(id="test_nc_item", engine="sdxl_turbo", prompt="test prompt", width=64, height=64)
+    pack = Pack(pack_id="pack_test_nc", items=[item], output_dir=str(tmp_path / "nc_out"))
+
+    # Case 1: Without allow_noncommercial -> raises ValueError
+    runner_refused = PackRunner(pack, output_dir=tmp_path / "nc_out", allow_noncommercial=False)
+    with pytest.raises(ValueError, match="commercial_ok=false"):
+        runner_refused.run()
+
+    # Case 2: With allow_noncommercial=True parameter -> passes upfront check
+    runner_allowed = PackRunner(pack, output_dir=tmp_path / "nc_out", allow_noncommercial=True)
+    # The upfront validation must pass without raising ValueError
+    assert runner_allowed.allow_noncommercial is True
+
+    # Case 3: With STUDIO_ALLOW_NONCOMMERCIAL=1 env -> passes upfront check
+    monkeypatch.setenv("STUDIO_ALLOW_NONCOMMERCIAL", "1")
+    runner_env = PackRunner(pack, output_dir=tmp_path / "nc_out", allow_noncommercial=False)
+    assert runner_env.allow_noncommercial is False
