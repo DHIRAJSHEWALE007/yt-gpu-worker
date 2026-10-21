@@ -3,15 +3,15 @@
 For every enabled engine in models.yaml:
 - Measures and records:
   - Download & model load time
-  - Peak VRAM and peak RAM
-  - Seconds per item at: 768x768, 1024x1024, 832x1216
-  - Failures over 5 fixed prompts and seeds
-- For Wan 2.2 5B:
-  - Renders one 480p clip of ~3 seconds made from a generated still
+  - Per-item isolated Peak VRAM (reset per item)
+  - Median latency per resolution (excluding initial warm-up item)
+  - Full prompt text for prompt adherence evaluation
+- For video engines:
+  - Renders 480p preview clip with latency & isolated VRAM
 - Generates:
   - Rendered image/video files
-  - HTML contact sheet (contact_sheet.html)
-  - Full metrics JSON (bakeoff.json)
+  - Interactive HTML contact sheet (contact_sheet.html) with full prompts
+  - Metrics JSON (bakeoff.json) without stub entries for skipped engines
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
+import statistics
 import sys
 import time
 from typing import Any, Dict, List
@@ -55,42 +56,62 @@ RESOLUTIONS = [
 
 
 def generate_contact_sheet_html(results: Dict[str, Any], output_path: Path) -> None:
-    """Generate high-contrast dark-mode HTML contact sheet comparing all engines."""
+    """Generate high-contrast dark-mode HTML contact sheet comparing all engines with prompt text."""
     html_lines = [
         "<!DOCTYPE html>",
         "<html lang='en'>",
         "<head>",
         "  <meta charset='UTF-8'/>",
+        "  <meta name='viewport' content='width=device-width, initial-scale=1.0'/>",
         "  <title>Model Bakeoff Comparison Sheet</title>",
         "  <style>",
-        "    body { background: #0B0F19; color: #F8FAFC; font-family: -apple-system, sans-serif; padding: 24px; }",
-        "    h1, h2 { color: #38BDF8; font-weight: 700; }",
-        "    .engine-section { background: #131B2E; border: 1px solid #1E293B; border-radius: 12px; padding: 20px; margin-bottom: 24px; }",
-        "    .metrics-table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 13px; margin: 12px 0; }",
-        "    .metrics-table th, .metrics-table td { border: 1px solid #334155; padding: 8px 12px; text-align: left; }",
+        "    body { background: #0B0F19; color: #F8FAFC; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 24px; margin: 0; }",
+        "    h1 { color: #38BDF8; font-size: 26px; margin: 0 0 6px 0; font-weight: 700; }",
+        "    .timestamp { color: #94A3B8; font-size: 13px; font-family: monospace; margin-bottom: 28px; }",
+        "    .engine-section { background: #131B2E; border: 1px solid #1E293B; border-radius: 12px; padding: 24px; margin-bottom: 32px; }",
+        "    .engine-header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #1E293B; padding-bottom: 12px; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }",
+        "    .engine-title { color: #38BDF8; font-size: 20px; font-weight: 700; margin: 0; }",
+        "    .engine-meta { color: #94A3B8; font-size: 13px; font-family: monospace; }",
+        "    .metrics-table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 13px; margin: 16px 0; }",
+        "    .metrics-table th, .metrics-table td { border: 1px solid #334155; padding: 10px 14px; text-align: left; }",
         "    .metrics-table th { background: #1E293B; color: #00F0FF; }",
-        "    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-top: 16px; }",
-        "    .card { background: #05080F; border: 1px solid #334155; border-radius: 8px; overflow: hidden; padding: 8px; }",
-        "    .card img, .card video { width: 100%; height: auto; border-radius: 4px; display: block; }",
-        "    .caption { font-size: 11px; color: #94A3B8; margin-top: 6px; }",
+        "    .metrics-table tr:hover { background: #1E293B40; }",
+        "    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; margin-top: 20px; }",
+        "    .card { background: #070B14; border: 1px solid #1E293B; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }",
+        "    .card img, .card video { width: 100%; height: auto; display: block; border-bottom: 1px solid #1E293B; background: #000; }",
+        "    .card-info { padding: 12px; display: flex; flex-direction: column; gap: 10px; flex-grow: 1; justify-content: space-between; }",
+        "    .prompt-box { font-size: 12px; color: #E2E8F0; line-height: 1.45; background: #0F172A; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #38BDF8; }",
+        "    .meta-badges { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; font-family: monospace; }",
+        "    .badge { background: #1E293B; color: #CBD5E1; padding: 3px 8px; border-radius: 4px; border: 1px solid #334155; }",
+        "    .badge-warmup { background: #854D0E30; color: #FACC15; border-color: #A16207; }",
+        "    .badge-time { background: #065F4630; color: #34D399; border-color: #059669; }",
+        "    .badge-vram { background: #312E8130; color: #A5B4FC; border-color: #4338CA; }",
         "  </style>",
         "</head>",
         "<body>",
         "  <h1>yt-gpu-worker: Model Bakeoff Benchmark</h1>",
-        f"  <p style='color: #94A3B8; font-size: 13px;'>Generated: {time.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>",
+        f"  <div class='timestamp'>Generated: {time.strftime('%Y-%m-%d %H:%M:%S UTC')}</div>",
     ]
 
     for engine_id, data in results.items():
         html_lines.append("  <div class='engine-section'>")
-        html_lines.append(f"    <h2>Engine: {engine_id}</h2>")
-        html_lines.append(f"    <p>Load Time: {data.get('load_time_sec', 0):.2f}s | Failures: {data.get('total_failures', 0)}</p>")
+        html_lines.append("    <div class='engine-header'>")
+        html_lines.append(f"      <h2 class='engine-title'>Engine: {engine_id}</h2>")
+        html_lines.append(f"      <div class='engine-meta'>Load Time: {data.get('load_time_sec', 0):.2f}s | Failures: {data.get('total_failures', 0)}</div>")
+        html_lines.append("    </div>")
+
         html_lines.append("    <table class='metrics-table'>")
-        html_lines.append("      <tr><th>Resolution</th><th>Avg Latency (s)</th><th>Peak VRAM (MB)</th><th>Samples Tested</th></tr>")
+        html_lines.append("      <tr><th>Resolution</th><th>Median Latency (s)</th><th>Warm-up (s)</th><th>Peak VRAM (MB)</th><th>Samples Tested</th></tr>")
 
         for res_str, res_data in data.get("resolutions", {}).items():
+            median_val = res_data.get("median_seconds_per_item", res_data.get("avg_seconds_per_item", 0))
+            warmup_val = res_data.get("warmup_seconds", median_val)
+            vram_val = res_data.get("peak_vram_mb", 0.0)
+            count_val = res_data.get("samples_count", 0)
+
             html_lines.append(
-                f"      <tr><td>{res_str}</td><td>{res_data.get('avg_seconds_per_item', 0):.2f}s</td>"
-                f"<td>{res_data.get('peak_vram_mb', 0):.1f} MB</td><td>{res_data.get('samples_count', 0)}</td></tr>"
+                f"      <tr><td>{res_str}</td><td><strong>{median_val:.2f}s</strong></td>"
+                f"<td>{warmup_val:.2f}s</td><td>{vram_val:.1f} MB</td><td>{count_val}</td></tr>"
             )
         html_lines.append("    </table>")
 
@@ -98,11 +119,37 @@ def generate_contact_sheet_html(results: Dict[str, Any], output_path: Path) -> N
         for sample in data.get("samples", []):
             rel_path = sample.get("file_path", "")
             media_type = sample.get("media_type", "image")
-            caption = f"Seed: {sample.get('seed')} | Res: {sample.get('width')}x{sample.get('height')} | {sample.get('latency_sec', 0):.2f}s"
-            if media_type == "video":
-                html_lines.append(f"      <div class='card'><video src='{rel_path}' controls></video><div class='caption'>{caption}</div></div>")
-            else:
-                html_lines.append(f"      <div class='card'><img src='{rel_path}' alt='Sample'/><div class='caption'>{caption}</div></div>")
+            prompt_text = sample.get("prompt", "Prompt text unavailable")
+            is_warmup = sample.get("is_warmup", False)
+            lat_sec = sample.get("latency_sec", 0)
+            vram_mb = sample.get("peak_vram_mb", 0)
+            w = sample.get("width", 0)
+            h = sample.get("height", 0)
+            seed = sample.get("seed", 0)
+
+            media_tag = (
+                f"<video src='{rel_path}' controls></video>"
+                if media_type == "video"
+                else f"<img src='{rel_path}' alt='Sample' loading='lazy'/>"
+            )
+
+            vram_badge = f"<span class='badge badge-vram'>{vram_mb:.0f} MB VRAM</span>" if vram_mb > 0 else ""
+            time_badge_class = "badge-warmup" if is_warmup else "badge-time"
+            time_label = f"{lat_sec:.2f}s (warm-up)" if is_warmup else f"{lat_sec:.2f}s"
+
+            html_lines.append(f"""      <div class='card'>
+        {media_tag}
+        <div class='card-info'>
+          <div class='prompt-box'>"{prompt_text}"</div>
+          <div class='meta-badges'>
+            <span class='badge'>{w}x{h}</span>
+            <span class='badge'>Seed: {seed}</span>
+            <span class='badge {time_badge_class}'>{time_label}</span>
+            {vram_badge}
+          </div>
+        </div>
+      </div>""")
+
         html_lines.append("    </div>")
         html_lines.append("  </div>")
 
@@ -142,6 +189,7 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
             engine.load()
         except Exception as e:
             logger.warning("Could not load %s (requires GPU weights?): %s", engine_id, e)
+            # Skip engine entirely if it fails to load; do not write a stub entry
             continue
 
         load_time = time.time() - t0
@@ -163,37 +211,53 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
                 media_type="video",
                 duration_seconds=3.0,
             )
+
+            # Reset peak VRAM counter before item generation
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
+
             t_gen = time.time()
             try:
                 out_path = engine.generate(item, out_dir)
                 dur = round(time.time() - t_gen, 2)
-                engine_results["samples"].append({
-                    "seed": SEEDS[0],
-                    "width": res_w,
-                    "height": res_h,
-                    "latency_sec": dur,
-                    "media_type": "video",
-                    "file_path": str(out_path.name),
-                })
-                vram_mb = 0.0
+
+                item_vram_mb = 0.0
                 try:
                     import torch
                     if torch.cuda.is_available():
-                        vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+                        item_vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
                 except Exception:
                     pass
+
+                engine_results["samples"].append({
+                    "seed": SEEDS[0],
+                    "prompt": PROMPTS[0],
+                    "width": res_w,
+                    "height": res_h,
+                    "latency_sec": dur,
+                    "is_warmup": False,
+                    "peak_vram_mb": item_vram_mb,
+                    "media_type": "video",
+                    "file_path": str(out_path.name),
+                })
                 engine_results["resolutions"]["854x480"] = {
-                    "avg_seconds_per_item": dur,
+                    "median_seconds_per_item": dur,
+                    "warmup_seconds": dur,
                     "samples_count": 1,
-                    "peak_vram_mb": vram_mb,
+                    "peak_vram_mb": item_vram_mb,
                 }
             except Exception as e:
-                logger.error("Video clip generation failed: %s", e)
+                logger.error("Video clip generation failed on %s: %s", engine_id, e)
                 engine_results["total_failures"] += 1
         else:
             for w, h in RESOLUTIONS:
                 res_key = f"{w}x{h}"
                 latencies: List[float] = []
+                vram_measurements: List[float] = []
 
                 for idx in range(min(len(PROMPTS), 5)):
                     p = PROMPTS[idx]
@@ -207,16 +271,40 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
                         seed=s,
                         media_type="image",
                     )
+
+                    # Reset peak VRAM counter before each individual item
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.reset_peak_memory_stats()
+                    except Exception:
+                        pass
+
                     t_gen = time.time()
                     try:
                         out_path = engine.generate(item, out_dir)
                         dur = round(time.time() - t_gen, 2)
+
+                        item_vram_mb = 0.0
+                        try:
+                            import torch
+                            if torch.cuda.is_available():
+                                item_vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+                        except Exception:
+                            pass
+
                         latencies.append(dur)
+                        vram_measurements.append(item_vram_mb)
+                        is_warmup = (idx == 0)
+
                         engine_results["samples"].append({
                             "seed": s,
+                            "prompt": p,
                             "width": w,
                             "height": h,
                             "latency_sec": dur,
+                            "is_warmup": is_warmup,
+                            "peak_vram_mb": item_vram_mb,
                             "media_type": "image",
                             "file_path": str(out_path.name),
                         })
@@ -224,23 +312,29 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
                         logger.error("Bakeoff sample generation failed on %s (%dx%d): %s", engine_id, w, h, e)
                         engine_results["total_failures"] += 1
 
-                avg_sec = round(sum(latencies) / len(latencies), 2) if latencies else 0.0
-                vram_mb = 0.0
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
-                except Exception:
-                    pass
-                engine_results["resolutions"][res_key] = {
-                    "avg_seconds_per_item": avg_sec,
-                    "samples_count": len(latencies),
-                    "peak_vram_mb": vram_mb,
-                }
+                # Calculate median latency excluding the first warm-up item
+                if latencies:
+                    warmup_val = latencies[0]
+                    steady_latencies = latencies[1:] if len(latencies) > 1 else latencies
+                    median_sec = round(statistics.median(steady_latencies), 2)
+                    peak_vram = max(vram_measurements) if vram_measurements else 0.0
+
+                    engine_results["resolutions"][res_key] = {
+                        "median_seconds_per_item": median_sec,
+                        "warmup_seconds": warmup_val,
+                        "samples_count": len(latencies),
+                        "peak_vram_mb": peak_vram,
+                    }
 
         engine.unload()
+        del engine
         clear_gpu_memory()
-        bakeoff_results[engine_id] = engine_results
+
+        # Requirement 4: Do not write a stub entry for an engine that produced 0 samples
+        if engine_results["samples"]:
+            bakeoff_results[engine_id] = engine_results
+        else:
+            logger.info("Excluding engine '%s' from results: 0 successful samples were rendered.", engine_id)
 
     # Save bakeoff.json
     json_path = out_dir / "bakeoff.json"
