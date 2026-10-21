@@ -40,11 +40,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 PROMPTS = [
-    "A majestic snow-capped mountain range under a vibrant aurora borealis, ultra-detailed 8k, cinematic lighting",
-    "Ancient weathered stone temple submerged in an emerald green jungle with sunbeams piercing the canopy",
-    "Futuristic cyberpunk city street at night, neon reflections on wet asphalt, volumetric fog, high fidelity",
-    "Macro photograph of a colorful tropical chameleon perched on an exotic orchid blossom, sharp focus",
-    "Dramatic ocean storm with massive waves crashing against tall sea cliffs, dramatic clouds, golden hour",
+    # 1. Portrait & Photorealism: Tests fine facial anatomy, skin pores, natural lighting, and micro-details
+    "Close-up portrait of an elderly master watchmaker with weathered skin, silver spectacles, and focused expression, carefully assembling a brass pocket watch with tweezers under a warm tungsten desk lamp, intricate exposed gears, shallow depth of field, 85mm lens, pores and natural wrinkles visible, authentic photorealism",
+
+    # 2. Text Rendering & Typography: Tests legibility and letter formation (prime discriminator for FLUX vs SDXL)
+    "A charming European street corner coffee shop with a clear legible wooden overhead sign that reads 'THE ROASTED BEAN', a black chalkboard on the cobblestone pavement with handwritten chalk text 'FRESH ESPRESSO', warm amber interior lighting glowing through the rainy window pane, 35mm film photography",
+
+    # 3. Multi-Subject Composition & Spatial Relations: Tests complex scene layout without subject bleeding
+    "Still life arrangement on a polished dark mahogany desk: a brass antique armillary sphere on the left, an open handwritten leather journal with an inked quill pen in the center, and a crystal glass half-filled with amber bourbon casting caustics on the right, soft directional morning sunlight through an arched stone window",
+
+    # 4. Cinematic Sci-Fi & Specular Lighting: Tests wide dynamic range, atmospheric perspective, and materials
+    "A lone astronaut in a detailed matte white EVA spacesuit standing beside a rover on the wet reflective obsidian surface of an alien moon, two vibrant purple gas giant planets looming in the dark star-filled sky, neon teal HUD visor reflection, atmospheric volumetric mist, cinematic wide angle",
+
+    # 5. Macro Organic Textures & Color Fidelity: Tests subsurface scattering, prismatic color, and focal depth
+    "Extreme macro shot of a crystalline iridescent chameleon perched on a vibrant pink lotus petal, translucent dewdrops clinging to its emerald scales, vivid prismatic color spectrum reflecting off the scales, delicate petal veins, razor-sharp eye focus, soft creamy bokeh background",
+]
+
+VIDEO_PROMPTS = [
+    # Fluid dynamics, motion coherence, and cinematic camera physics
+    "Cinematic slow-motion aerial drone sweep across rugged ocean cliffs at golden hour, violent turquoise waves crashing against black volcanic sea stacks, water spray catching warm sunlight, smooth dynamic camera movement, 4k cinematic documentary",
 ]
 
 SEEDS = [101, 202, 303, 404, 505]
@@ -204,7 +218,7 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
             item = Item(
                 id=f"{engine_id}_clip_0",
                 engine=engine_id,
-                prompt=PROMPTS[0],
+                prompt=VIDEO_PROMPTS[0],
                 width=res_w,
                 height=res_h,
                 seed=SEEDS[0],
@@ -235,7 +249,7 @@ def run_bakeoff(output_dir: Path | None = None, engines_to_test: List[str] | Non
 
                 engine_results["samples"].append({
                     "seed": SEEDS[0],
-                    "prompt": PROMPTS[0],
+                    "prompt": VIDEO_PROMPTS[0],
                     "width": res_w,
                     "height": res_h,
                     "latency_sec": dur,

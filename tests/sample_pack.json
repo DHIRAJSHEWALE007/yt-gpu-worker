@@ -8,8 +8,8 @@
     {
       "id": "sample_shot_01",
       "engine": "fake",
-      "prompt": "A scenic mountain landscape with a river at sunset, photorealistic",
-      "negative_prompt": "blurry, low quality",
+      "prompt": "Close-up portrait of an elderly master watchmaker with weathered skin, silver spectacles, and focused expression, carefully assembling a brass pocket watch with tweezers under a warm tungsten desk lamp, intricate exposed gears, shallow depth of field, 85mm lens, pores and natural wrinkles visible, authentic photorealism",
+      "negative_prompt": "blurry, low quality, deformed eyes, extra limbs, plastic skin, cartoon",
       "width": 1024,
       "height": 1024,
       "seed": 42,
@@ -18,8 +18,8 @@
     {
       "id": "sample_shot_02",
       "engine": "fake",
-      "prompt": "Futuristic neon city street in the rain with glowing reflections",
-      "negative_prompt": "blurry, dark",
+      "prompt": "A charming European street corner coffee shop with a clear legible wooden overhead sign that reads 'THE ROASTED BEAN', a black chalkboard on the cobblestone pavement with handwritten chalk text 'FRESH ESPRESSO', warm amber interior lighting glowing through the rainy window pane, 35mm film photography",
+      "negative_prompt": "blurry, dark, illegible text, low resolution, artifacts",
       "width": 768,
       "height": 768,
       "seed": 101,
@@ -28,7 +28,7 @@
     {
       "id": "sample_clip_03",
       "engine": "fake",
-      "prompt": "Cinematic camera sweep across ocean waves and rugged cliffs",
+      "prompt": "Cinematic slow-motion aerial drone sweep across rugged ocean cliffs at golden hour, violent turquoise waves crashing against black volcanic sea stacks, water spray catching warm sunlight, smooth dynamic camera movement, 4k cinematic documentary",
       "width": 854,
       "height": 480,
       "seed": 202,
