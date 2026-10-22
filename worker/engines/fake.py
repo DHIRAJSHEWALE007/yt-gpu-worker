@@ -57,6 +57,7 @@ class FakeEngine(Engine):
         super().__init__(config)
         self.simulate_oom_on_ids: Set[str] = set()
         self.simulate_delay_seconds: float = 0.0
+        self.simulate_oom_on_large_res: bool = False
 
     def load(self, device: Optional[str] = None, dtype: Optional[Any] = None) -> None:
         self.device = "cpu"
@@ -72,6 +73,9 @@ class FakeEngine(Engine):
         if item.id in self.simulate_oom_on_ids:
             self.simulate_oom_on_ids.remove(item.id)
             raise RuntimeError("CUDA out of memory. Tried to allocate 2.40 GiB (GPU 0; 15.78 GiB total capacity)")
+
+        if self.simulate_oom_on_large_res and (item.width > 768 or item.height > 768):
+            raise RuntimeError(f"CUDA out of memory at large resolution ({item.width}x{item.height})")
 
         if self.simulate_delay_seconds > 0:
             time.sleep(self.simulate_delay_seconds)

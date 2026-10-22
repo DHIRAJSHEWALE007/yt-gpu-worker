@@ -177,10 +177,51 @@ def test_cli_runner_subprocess_execution(tmp_path: Path, monkeypatch: pytest.Mon
         "--results", str(custom_results_path),
         "--test",
     ]
-    res = subprocess.run(cmd, env=env, check=True)
+    repo_root = Path(__file__).resolve().parents[1]
+    res = subprocess.run(cmd, cwd=str(repo_root), env=env, check=True)
     assert res.returncode == 0
     assert custom_results_path.is_file()
     results = load_results(custom_results_path)
     assert len(results) == 1
     assert results[0].item_id == "cli_sub_item"
     assert results[0].status == "success"
+
+
+def test_runner_oom_downscale_fallback_stage2(tmp_path: Path) -> None:
+    """Verify 2-stage OOM retry falls back to downscaling when CPU offload still OOMs, and records fallback_applied in results.json."""
+    item_large = Item(id="shot_large_oom", engine="fake", prompt="Huge render", width=1024, height=1024)
+
+    pack = Pack(
+        pack_id="pack_stage2_oom_test",
+        items=[item_large],
+        output_dir=str(tmp_path / "stage2_out"),
+    )
+
+    out_dir = tmp_path / "stage2_out"
+    runner = PackRunner(pack, output_dir=out_dir)
+
+    # Configure FakeEngine to OOM at > 768
+    def _get_engine_patch(engine_id: str):
+        eng = FakeEngine()
+        eng.simulate_oom_on_large_res = True
+        return eng
+
+    runner._get_or_load_engine = _get_engine_patch  # type: ignore
+
+    results = runner.run()
+    assert len(results) == 1
+    res = results[0]
+
+    # Must recover on stage 2 (downscaled to 768x768)
+    assert res.status == "success"
+    assert res.retried_oom is True
+    assert res.fallback_applied == "downscale"
+    assert Path(res.output_path).is_file()
+
+    # Verify saved results.json contains fallback_applied
+    res_file = out_dir / "results.json"
+    assert res_file.is_file()
+    saved_results = load_results(res_file)
+    assert len(saved_results) == 1
+    assert saved_results[0].fallback_applied == "downscale"
+    assert saved_results[0].retried_oom is True

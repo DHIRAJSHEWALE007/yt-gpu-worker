@@ -216,38 +216,73 @@ class PackRunner:
         self._active_engine = engine
         return engine
 
-    def _execute_item_with_oom_recovery(self, engine: Engine, item: Item) -> Tuple[Optional[Path], bool, Optional[str]]:
-        """Run generation on item with 1-step downscale/offload retry upon CUDA OOM.
-        
-        Returns: (output_path, retried_oom, error_message)
+    def _execute_item_with_oom_recovery(
+        self, engine: Engine, item: Item
+    ) -> Tuple[Optional[Path], bool, Optional[str], Optional[str]]:
+        """Run generation on item with a 2-stage OOM retry fallback chain:
+        1. Retry once with model CPU offload
+        2. Retry once at a smaller downscaled resolution (0.75x)
+
+        Returns: (output_path, retried_oom, fallback_applied, error_message)
         """
+        # Attempt 1: Normal execution
         try:
             path = engine.generate(item, self.output_dir)
-            return path, False, None
+            return path, False, None, None
         except Exception as exc:
             if not is_oom_exception(exc):
-                # Standard non-OOM exception
-                return None, False, str(exc)
+                return None, False, None, str(exc)
 
-            logger.warning("[OOM DETECTED] GPU OOM during item %s (%dx%d). Initiating recovery retry...",
-                           item.id, item.width, item.height)
+            logger.warning(
+                "[OOM DETECTED] GPU OOM during item %s (%dx%d). Fallback Stage 1: Retrying with model CPU offload...",
+                item.id, item.width, item.height
+            )
             clear_gpu_memory()
 
-            # Downscale resolution to 768x768 or 0.75x (rounded to multiple of 64)
-            fallback_w = max(512, (int(item.width * 0.75) // 64) * 64)
-            fallback_h = max(512, (int(item.height * 0.75) // 64) * 64)
-            retry_item = item.model_copy(update={"width": fallback_w, "height": fallback_h})
+        # Fallback Stage 1: Retry once with model CPU offload
+        try:
+            if hasattr(engine, "pipe") and engine.pipe is not None:
+                if hasattr(engine.pipe, "enable_model_cpu_offload") and callable(getattr(engine.pipe, "enable_model_cpu_offload")):
+                    target_gpu = self.gpu_index if self.gpu_index is not None else 0
+                    try:
+                        engine.pipe.enable_model_cpu_offload(gpu_id=target_gpu)
+                    except TypeError:
+                        engine.pipe.enable_model_cpu_offload()
+                    engine.offload = "model"
+                    logger.info("[OOM FALLBACK 1] Enabled model CPU offload on engine %s", engine.engine_id)
 
-            try:
-                path = engine.generate(retry_item, self.output_dir)
-                logger.info("[OOM RECOVERED] Successfully generated %s at downscaled resolution (%dx%d)",
-                            item.id, fallback_w, fallback_h)
-                return path, True, None
-            except Exception as retry_exc:
-                logger.error("[OOM RETRY FAILED] Item %s failed second attempt: %s. Continuing run.",
-                             item.id, retry_exc)
-                clear_gpu_memory()
-                return None, True, f"OOM after downscale retry: {retry_exc}"
+            path = engine.generate(item, self.output_dir)
+            logger.info("[OOM RECOVERED] Successfully generated %s via model CPU offload fallback", item.id)
+            return path, True, "cpu_offload", None
+        except Exception as offload_exc:
+            if not is_oom_exception(offload_exc):
+                return None, True, "cpu_offload", str(offload_exc)
+
+            logger.warning(
+                "[OOM DETECTED] GPU OOM persisted with model CPU offload during item %s. Fallback Stage 2: Retrying at smaller resolution...",
+                item.id
+            )
+            clear_gpu_memory()
+
+        # Fallback Stage 2: Retry once at smaller resolution (0.75x)
+        fallback_w = max(512, (int(item.width * 0.75) // 64) * 64)
+        fallback_h = max(512, (int(item.height * 0.75) // 64) * 64)
+        retry_item = item.model_copy(update={"width": fallback_w, "height": fallback_h})
+
+        try:
+            path = engine.generate(retry_item, self.output_dir)
+            logger.info(
+                "[OOM RECOVERED] Successfully generated %s at downscaled resolution (%dx%d)",
+                item.id, fallback_w, fallback_h
+            )
+            return path, True, "downscale", None
+        except Exception as downscale_exc:
+            logger.error(
+                "[OOM RETRY FAILED] Item %s failed both CPU offload and downscale fallbacks: %s",
+                item.id, downscale_exc
+            )
+            clear_gpu_memory()
+            return None, True, "downscale", f"OOM after cpu_offload and downscale retry: {downscale_exc}"
 
     def run(self) -> List[Result]:
         """Execute full pack workload and return list of Results."""
@@ -357,7 +392,7 @@ class PackRunner:
                 t0 = time.time()
                 try:
                     engine = self._get_or_load_engine(item.engine)
-                    out_path, retried_oom, err_msg = self._execute_item_with_oom_recovery(engine, item)
+                    out_path, retried_oom, fallback_applied, err_msg = self._execute_item_with_oom_recovery(engine, item)
                     exec_time = time.time() - t0
 
                     if out_path and out_path.is_file():
@@ -368,6 +403,7 @@ class PackRunner:
                             engine=item.engine,
                             execution_time_seconds=round(exec_time, 2),
                             retried_oom=retried_oom,
+                            fallback_applied=fallback_applied,
                             width=item.width,
                             height=item.height,
                             seed=item.seed,
@@ -380,6 +416,7 @@ class PackRunner:
                             engine=item.engine,
                             execution_time_seconds=round(exec_time, 2),
                             retried_oom=retried_oom,
+                            fallback_applied=fallback_applied,
                             width=item.width,
                             height=item.height,
                             seed=item.seed,

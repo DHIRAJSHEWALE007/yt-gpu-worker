@@ -58,7 +58,8 @@ class Result(BaseModel):
     execution_time_seconds: float = Field(default=0.0, description="Seconds spent in model generation")
     peak_vram_mb: Optional[float] = Field(default=None, description="Peak VRAM allocated during run in MB")
     error: Optional[str] = Field(default=None, description="Error message if status is failed")
-    retried_oom: bool = Field(default=False, description="True if recovered from CUDA OOM via downscaling")
+    retried_oom: bool = Field(default=False, description="True if recovered from CUDA OOM")
+    fallback_applied: Optional[str] = Field(default=None, description="Fallback strategy applied on OOM: 'cpu_offload' or 'downscale'")
     width: Optional[int] = None
     height: Optional[int] = None
     seed: Optional[int] = None
