@@ -34,26 +34,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # Predefined typographic callout labels for explainer diagram scenes
+# Predefined typographic callout labels for explainer visual scenes
+# NOTE: Pillow typography overlays are for aesthetic decoration only.
+# Factual, scientific, and technical diagrams belong to the Manim/Graphviz plugin.
 DIAGRAM_LABELS_MAP: Dict[int, List[Dict[str, Any]]] = {
     6: [
-        {"text": "Volcanic Arc (Magma Eruptions)", "x": 0.22, "y": 0.18, "target": (0.30, 0.35)},
-        {"text": "Continental Lithosphere Crust", "x": 0.10, "y": 0.50, "target": (0.22, 0.52)},
-        {"text": "Magma Chamber Plume", "x": 0.20, "y": 0.72, "target": (0.32, 0.68)},
-        {"text": "Deep Oceanic Subduction Trench", "x": 0.52, "y": 0.28, "target": (0.48, 0.44)},
-        {"text": "Descending Oceanic Plate", "x": 0.62, "y": 0.68, "target": (0.55, 0.60)},
+        {"text": "Volcanic Arc (Magma Eruptions)", "x": 0.20, "y": 0.16, "anchor": (0.30, 0.35)},
+        {"text": "Continental Lithosphere Crust", "x": 0.08, "y": 0.48, "anchor": (0.22, 0.52)},
+        {"text": "Magma Chamber Plume", "x": 0.18, "y": 0.72, "anchor": (0.32, 0.68)},
+        {"text": "Deep Oceanic Subduction Trench", "x": 0.52, "y": 0.26, "anchor": (0.48, 0.44)},
+        {"text": "Descending Oceanic Plate", "x": 0.62, "y": 0.68, "anchor": (0.55, 0.60)},
     ],
     7: [
-        {"text": "Leader Node (Consensus Proposer)", "x": 0.36, "y": 0.16, "target": (0.50, 0.28)},
-        {"text": "Raft Quorum Validator A", "x": 0.10, "y": 0.54, "target": (0.25, 0.50)},
-        {"text": "Raft Quorum Validator B", "x": 0.65, "y": 0.54, "target": (0.75, 0.50)},
-        {"text": "Replicated State Machine Log", "x": 0.32, "y": 0.82, "target": (0.50, 0.74)},
+        {"text": "Leader Node (Consensus Proposer)", "x": 0.34, "y": 0.14, "anchor": (0.50, 0.28)},
+        {"text": "Raft Quorum Validator A", "x": 0.08, "y": 0.52, "anchor": (0.25, 0.50)},
+        {"text": "Raft Quorum Validator B", "x": 0.65, "y": 0.52, "anchor": (0.75, 0.50)},
+        {"text": "Replicated State Machine Log", "x": 0.30, "y": 0.82, "anchor": (0.50, 0.74)},
     ],
     8: [
-        {"text": "Cornea (Refractive Surface)", "x": 0.10, "y": 0.30, "target": (0.22, 0.45)},
-        {"text": "Crystalline Lens (Focusing)", "x": 0.22, "y": 0.16, "target": (0.34, 0.48)},
-        {"text": "Focal Optical Rays", "x": 0.44, "y": 0.36, "target": (0.50, 0.50)},
-        {"text": "Retinal Fovea Photoreceptors", "x": 0.68, "y": 0.46, "target": (0.76, 0.50)},
-        {"text": "Optic Nerve Signal Bundle", "x": 0.68, "y": 0.72, "target": (0.80, 0.62)},
+        {"text": "Cornea (Refractive Surface)", "x": 0.08, "y": 0.28, "anchor": (0.22, 0.45)},
+        {"text": "Crystalline Lens (Focusing)", "x": 0.20, "y": 0.14, "anchor": (0.34, 0.48)},
+        {"text": "Focal Optical Rays", "x": 0.42, "y": 0.34, "anchor": (0.50, 0.50)},
+        {"text": "Retinal Fovea Photoreceptors", "x": 0.68, "y": 0.44, "anchor": (0.76, 0.50)},
+        {"text": "Optic Nerve Signal Bundle", "x": 0.68, "y": 0.72, "anchor": (0.80, 0.62)},
     ],
 }
 
@@ -63,7 +66,16 @@ def overlay_diagram_labels(
     output_path: Path,
     labels: List[Dict[str, Any]],
 ) -> Path:
-    """Draw high-contrast typography labels, semi-transparent pill badges, and leader lines on a diagram background using Pillow."""
+    """Draw high-contrast typography labels, semi-transparent pill badges, and leader lines on an image background using Pillow.
+
+    NOTE: Pillow typography overlays are for aesthetic decoration only.
+    Factual, scientific, and technical diagrams belong to the Manim/Graphviz plugin.
+    
+    Guarantees:
+      - Font is dynamically scaled to at least 3% of the image height.
+      - Accepts label anchor coordinates (normalized 0.0 to 1.0) and draws a leader line with locator dot.
+      - Strictly refuses to render any label without explicit normalized anchor coordinates.
+    """
     if not image_path.is_file():
         raise FileNotFoundError(f"Source image not found: {image_path}")
 
@@ -74,8 +86,10 @@ def overlay_diagram_labels(
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    # Attempt to load a clean proportional truetype font, falling back to default
-    font_size = max(15, int(width * 0.018))
+    # Scale font to at least 3 percent of image height
+    min_font_pct = 0.03
+    font_size = max(int(height * min_font_pct), 16)
+
     font = None
     for font_name in ["arial.ttf", "DejaVuSans.ttf", "Helvetica.ttf", "calibri.ttf", "tahoma.ttf"]:
         try:
@@ -89,53 +103,69 @@ def overlay_diagram_labels(
         except Exception:
             font = None
 
+    rendered_count = 0
     for label in labels:
         text = str(label.get("text", "")).strip()
         if not text:
             continue
 
-        pos_x = label.get("x", 0.5)
-        pos_y = label.get("y", 0.5)
-        px = int(pos_x * width) if isinstance(pos_x, float) and 0.0 <= pos_x <= 1.0 else int(pos_x)
-        py = int(pos_y * height) if isinstance(pos_y, float) and 0.0 <= pos_y <= 1.0 else int(pos_y)
-
-        # Leader line to target point
-        target = label.get("target")
-        if target:
-            tx_raw, ty_raw = target
-            tx = int(tx_raw * width) if isinstance(tx_raw, float) and 0.0 <= tx_raw <= 1.0 else int(tx_raw)
-            ty = int(ty_raw * height) if isinstance(ty_raw, float) and 0.0 <= ty_raw <= 1.0 else int(ty_raw)
-
-            line_color = label.get("line_color", (56, 189, 248, 230))  # accent cyan/sky
-            draw.line([(px, py), (tx, ty)], fill=line_color, width=3)
-
-            # Draw target locator dot
-            dot_r = 5
-            draw.ellipse(
-                [(tx - dot_r, ty - dot_r), (tx + dot_r, ty + dot_r)],
-                fill=(255, 255, 255, 255),
-                outline=line_color,
-                width=2,
+        # Strict Anchor Governance: Refuse to render labels without explicit normalized anchors
+        anchor = label.get("anchor") or label.get("target")
+        if not anchor or not (isinstance(anchor, (list, tuple)) and len(anchor) >= 2):
+            logger.warning(
+                "[OVERLAY REFUSAL] Refusing to render label '%s': missing explicit anchor coordinates (normalized 0-1). "
+                "(Note: Overlays are for decoration only; factual diagrams belong to Manim/Graphviz).",
+                text,
             )
+            continue
 
-        # Measure text box
-        pad_x = 12
-        pad_y = 6
+        ax_raw, ay_raw = float(anchor[0]), float(anchor[1])
+        if not (0.0 <= ax_raw <= 1.0 and 0.0 <= ay_raw <= 1.0):
+            logger.warning(
+                "[OVERLAY REFUSAL] Refusing label '%s': anchor coordinates (%s, %s) must be normalized between 0.0 and 1.0.",
+                text, ax_raw, ay_raw,
+            )
+            continue
+
+        ax = int(ax_raw * width)
+        ay = int(ay_raw * height)
+
+        pos_x = float(label.get("x", 0.5))
+        pos_y = float(label.get("y", 0.5))
+        px = int(pos_x * width) if (0.0 <= pos_x <= 1.0) else int(pos_x)
+        py = int(pos_y * height) if (0.0 <= pos_y <= 1.0) else int(pos_y)
+
+        # Draw leader line from label position to anchor point
+        line_color = label.get("line_color", (56, 189, 248, 230))  # neon sky/cyan
+        draw.line([(px, py), (ax, ay)], fill=line_color, width=3)
+
+        # Draw anchor target locator dot
+        dot_r = max(4, int(height * 0.005))
+        draw.ellipse(
+            [(ax - dot_r, ay - dot_r), (ax + dot_r, ay + dot_r)],
+            fill=(255, 255, 255, 255),
+            outline=line_color,
+            width=2,
+        )
+
+        # Measure text badge
+        pad_x = max(10, int(font_size * 0.45))
+        pad_y = max(6, int(font_size * 0.25))
         if hasattr(draw, "textbbox") and font:
             bbox = draw.textbbox((0, 0), text, font=font)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
         else:
-            tw, th = len(text) * 9, font_size + 4
+            tw, th = len(text) * int(font_size * 0.6), font_size + 4
 
         box_x0 = px - pad_x
         box_y0 = py - pad_y
         box_x1 = px + tw + pad_x
         box_y1 = py + th + pad_y
 
-        bg_color = label.get("bg_color", (11, 19, 38, 235))      # dark slate pill
+        bg_color = label.get("bg_color", (11, 19, 38, 235))          # dark slate pill
         border_color = label.get("border_color", (56, 189, 248, 255)) # neon sky border
-        text_color = label.get("text_color", (248, 250, 252, 255))   # pure white text
+        text_color = label.get("text_color", (248, 250, 252, 255))     # pure white
 
         # Draw rounded badge
         if hasattr(draw, "rounded_rectangle"):
@@ -145,12 +175,14 @@ def overlay_diagram_labels(
 
         # Draw text
         draw.text((px, py), text, font=font, fill=text_color)
+        rendered_count += 1
 
     # Composite layers
     final_img = Image.alpha_composite(img, overlay).convert("RGB")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     final_img.save(output_path, quality=95)
-    logger.info("Saved Pillow-annotated diagram to: %s", output_path)
+    logger.info("Saved Pillow-annotated diagram to: %s (rendered %d labels; factual diagrams belong to Manim/Graphviz)",
+                output_path, rendered_count)
     return output_path
 
 
@@ -210,6 +242,7 @@ def generate_style_contact_sheet_html(pack: Pack, results: List[Result], output_
         "    .container { max-width: 1400px; margin: 0 auto; }",
         "    h1 { color: #F8FAFC; font-size: 28px; margin: 0 0 6px 0; font-weight: 800; letter-spacing: -0.02em; }",
         "    .subtitle { color: #94A3B8; font-size: 14px; margin-bottom: 24px; font-family: monospace; }",
+        "    .decoration-notice { background: #1E293B; border-left: 4px solid #F59E0B; padding: 12px 18px; border-radius: 6px; margin-bottom: 24px; font-size: 13px; color: #FCD34D; }",
         "    .legend { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }",
         "    .legend-tag { padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }",
         "    .tag-channel { background: #0D3331; color: #2DD4BF; border: 1px solid #14B8A6; }",
@@ -239,6 +272,7 @@ def generate_style_contact_sheet_html(pack: Pack, results: List[Result], output_
         "  <div class='container'>",
         "    <h1>yt-gpu-worker: Style & Explainer Quality Benchmark</h1>",
         f"    <div class='subtitle'>Evaluated: {time.strftime('%Y-%m-%d %H:%M:%S UTC')} | SDXL-Lightning (Volume Image) vs FLUX.2 Klein (Default Image)</div>",
+        "    <div class='decoration-notice'><strong>Decoration Note:</strong> Pillow typography overlays are for aesthetic decoration only. Factual, scientific, and technical diagrams belong to the Manim/Graphviz plugin.</div>",
         "    <div class='legend'>",
         "      <div class='legend-tag tag-channel'>Channel Style: Flat vector illustration, teal & orange palette, no text</div>",
         "      <div class='legend-tag tag-explainer'>Explainer Diagram: Technical infographics with native AI text vs Pillow overlays</div>",

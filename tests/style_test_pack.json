@@ -71,39 +71,39 @@
     {
       "id": "style_sdxl_06",
       "engine": "sdxl_lightning",
-      "prompt": "An educational cross-section diagram showing tectonic subduction causing volcanic eruptions, labeled geological layers, clean vector infographic, technical illustration",
+      "prompt": "clean illustration of tectonic subduction causing volcanic eruptions with magma chamber and oceanic crust descending into mantle, no text, no letters, no labels, no captions, no UI elements",
       "width": 1024,
       "height": 1024,
       "seed": 5006,
       "media_type": "image",
       "extra_params": {
-        "category": "explainer_diagram",
+        "category": "explainer_visual",
         "title": "Tectonic Subduction & Volcanism"
       }
     },
     {
       "id": "style_sdxl_07",
       "engine": "sdxl_lightning",
-      "prompt": "An isometric flowchart diagram illustrating distributed computing consensus algorithms, interconnected nodes with packet flows, clean vector schematic",
+      "prompt": "clean illustration of distributed computing consensus protocol with interconnected server nodes and network packet flows, no text, no letters, no labels, no captions, no UI elements",
       "width": 1024,
       "height": 1024,
       "seed": 5007,
       "media_type": "image",
       "extra_params": {
-        "category": "explainer_diagram",
+        "category": "explainer_visual",
         "title": "Distributed Consensus Architecture"
       }
     },
     {
       "id": "style_sdxl_08",
       "engine": "sdxl_lightning",
-      "prompt": "A detailed anatomical cross-section diagram of the human eye focusing light rays through the crystalline lens onto the retina, educational medical infographic",
+      "prompt": "clean illustration of the anatomical cross-section of the human eye focusing light rays through the crystalline lens onto the retina, no text, no letters, no labels, no captions, no UI elements",
       "width": 1024,
       "height": 1024,
       "seed": 5008,
       "media_type": "image",
       "extra_params": {
-        "category": "explainer_diagram",
+        "category": "explainer_visual",
         "title": "Human Eye Optical Optics"
       }
     },
@@ -175,39 +175,39 @@
     {
       "id": "style_flux_06",
       "engine": "flux2_klein",
-      "prompt": "An educational cross-section diagram showing tectonic subduction causing volcanic eruptions, labeled geological layers, clean vector infographic, technical illustration",
+      "prompt": "clean illustration of tectonic subduction causing volcanic eruptions with magma chamber and oceanic crust descending into mantle, no text, no letters, no labels, no captions, no UI elements",
       "width": 1024,
       "height": 1024,
       "seed": 5006,
       "media_type": "image",
       "extra_params": {
-        "category": "explainer_diagram",
+        "category": "explainer_visual",
         "title": "Tectonic Subduction & Volcanism"
       }
     },
     {
       "id": "style_flux_07",
       "engine": "flux2_klein",
-      "prompt": "An isometric flowchart diagram illustrating distributed computing consensus algorithms, interconnected nodes with packet flows, clean vector schematic",
+      "prompt": "clean illustration of distributed computing consensus protocol with interconnected server nodes and network packet flows, no text, no letters, no labels, no captions, no UI elements",
       "width": 1024,
       "height": 1024,
       "seed": 5007,
       "media_type": "image",
       "extra_params": {
-        "category": "explainer_diagram",
+        "category": "explainer_visual",
         "title": "Distributed Consensus Architecture"
       }
     },
     {
       "id": "style_flux_08",
       "engine": "flux2_klein",
-      "prompt": "A detailed anatomical cross-section diagram of the human eye focusing light rays through the crystalline lens onto the retina, educational medical infographic",
+      "prompt": "clean illustration of the anatomical cross-section of the human eye focusing light rays through the crystalline lens onto the retina, no text, no letters, no labels, no captions, no UI elements",
       "width": 1024,
       "height": 1024,
       "seed": 5008,
       "media_type": "image",
       "extra_params": {
-        "category": "explainer_diagram",
+        "category": "explainer_visual",
         "title": "Human Eye Optical Optics"
       }
     }
