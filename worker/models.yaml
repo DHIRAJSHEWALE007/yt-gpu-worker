@@ -60,9 +60,7 @@ models:
     description: Fast 4-step distilled UNet based on SDXL for photorealistic images
       on 8GB-16GB GPUs.
     seconds_per_resolution:
-      768x768: 6.4
       1024x1024: 8.7
-      832x1216: 9.1
       1344x768: 3.5
       768x1344: 3.6
     parallel_mode: process_per_gpu
@@ -120,7 +118,7 @@ models:
     default_guidance_scale: 0.0
     seconds_per_item: 15.8
     load_seconds: 52.0
-    peak_vram_gb: null
+    peak_vram_gb: 6.7
     gated: false
     enabled: true
     notes: Hero image engine using FLUX.2 Klein 4B Apache-2.0 variant. Runs 4-bit
@@ -129,9 +127,7 @@ models:
     description: Quantized 4-step rectified flow transformer (4B Apache variant) for
       hero stills.
     seconds_per_resolution:
-      768x768: 10.6
       1024x1024: 15.8
-      832x1216: 16.1
       1344x768: 12.4
       768x1344: 12.4
     parallel_mode: process_per_gpu
