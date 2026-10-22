@@ -44,108 +44,145 @@ class InsufficientRAMError(RuntimeError):
 
 @dataclass
 class HostRAMInfo:
-    """Host RAM status in Gigabytes."""
+    """Host RAM status in Gigabytes based on MemAvailable."""
     total_ram_gb: float
     available_ram_gb: float
-    used_ram_gb: float
+    used_ram_gb: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.used_ram_gb:
+            self.used_ram_gb = max(0.0, round(self.total_ram_gb - self.available_ram_gb, 2))
 
     def __repr__(self) -> str:
-        return f"HostRAM(used={self.used_ram_gb:.2f}GB, avail={self.available_ram_gb:.2f}GB, total={self.total_ram_gb:.2f}GB)"
+        return f"HostRAM(avail={self.available_ram_gb:.2f}GB / total={self.total_ram_gb:.2f}GB)"
 
 
-def get_host_ram_info() -> HostRAMInfo:
-    """Read host RAM limit and available capacity from Linux cgroups, /proc/meminfo, or psutil."""
+def parse_proc_meminfo(meminfo_text: str) -> Dict[str, int]:
+    """Parse /proc/meminfo text into a dictionary of metric keys in bytes."""
+    data: Dict[str, int] = {}
+    for line in meminfo_text.splitlines():
+        if ":" in line:
+            parts = line.split(":", 1)
+            k = parts[0].strip()
+            v_str = parts[1].strip().split()[0]
+            if v_str.isdigit():
+                # Values in /proc/meminfo are in kB
+                data[k] = int(v_str) * 1024
+    return data
+
+
+def get_host_ram_info(
+    meminfo_path: Optional[Path] = None,
+    cgroup_limit_path: Optional[Path] = None,
+    cgroup_usage_path: Optional[Path] = None,
+) -> HostRAMInfo:
+    """Read host RAM available and total capacity from /proc/meminfo and cgroups.
+
+    Guarantees:
+      - Total RAM is based on MemTotal or the cgroup limit when lower.
+      - Available RAM is based on MemAvailable (not cache-inflated used), bounded by cgroup limit.
+      - When cgroup limits are active, available = min(MemAvailable, cgroup_limit - cgroup_usage).
+      - Logs and guards rely on available and total only.
+    """
     total_bytes: Optional[int] = None
     available_bytes: Optional[int] = None
-    used_bytes: Optional[int] = None
+    cgroup_limit_bytes: Optional[int] = None
+    cgroup_usage_bytes: Optional[int] = None
 
-    # 1. Inspect Linux cgroups v2 memory limits (container / Kaggle / Docker)
-    cgroup2_max = Path("/sys/fs/cgroup/memory.max")
-    if cgroup2_max.is_file():
+    # 1. Read /proc/meminfo (system-wide physical metrics)
+    m_path = meminfo_path or Path("/proc/meminfo")
+    if m_path.is_file():
         try:
-            val = cgroup2_max.read_text().strip()
-            if val != "max" and val.isdigit():
-                total_bytes = int(val)
-        except Exception:
-            pass
-
-    # 2. Inspect Linux cgroups v1 memory limits
-    if total_bytes is None:
-        cgroup1_limit = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-        if cgroup1_limit.is_file():
-            try:
-                val = int(cgroup1_limit.read_text().strip())
-                # If unconstrained, it reports ~2^63 - 4096
-                if val < (1 << 60):
-                    total_bytes = val
-            except Exception:
-                pass
-
-    # Check cgroup current usage
-    cgroup_current = Path("/sys/fs/cgroup/memory.current")
-    if not cgroup_current.is_file():
-        cgroup_current = Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")
-    if cgroup_current.is_file():
-        try:
-            used_bytes = int(cgroup_current.read_text().strip())
-        except Exception:
-            pass
-
-    # 3. Read /proc/meminfo on Linux for system-wide available memory
-    meminfo = Path("/proc/meminfo")
-    if meminfo.is_file():
-        try:
-            mem_data = {}
-            for line in meminfo.read_text().splitlines():
-                parts = line.split(":")
-                if len(parts) == 2:
-                    k, v = parts[0].strip(), parts[1].strip().split()[0]
-                    if v.isdigit():
-                        mem_data[k] = int(v) * 1024  # convert kB to bytes
-
-            if "MemTotal" in mem_data and total_bytes is None:
+            mem_data = parse_proc_meminfo(m_path.read_text(encoding="utf-8"))
+            if "MemTotal" in mem_data:
                 total_bytes = mem_data["MemTotal"]
             if "MemAvailable" in mem_data:
                 available_bytes = mem_data["MemAvailable"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read %s: %s", m_path, e)
 
-    # 4. Fallback to psutil (cross-platform Windows / Linux / macOS)
-    if psutil is not None:
+    # 2. Check cgroups v2 / v1 limits
+    lim_path = cgroup_limit_path
+    if lim_path is None:
+        cg2 = Path("/sys/fs/cgroup/memory.max")
+        cg1 = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        if cg2.is_file():
+            lim_path = cg2
+        elif cg1.is_file():
+            lim_path = cg1
+
+    if lim_path and lim_path.is_file():
         try:
-            vm = psutil.virtual_memory()
-            if total_bytes is None:
-                total_bytes = vm.total
-            if available_bytes is None:
-                available_bytes = vm.available
-            if used_bytes is None:
-                used_bytes = vm.used
+            val_str = lim_path.read_text(encoding="utf-8").strip()
+            if val_str != "max" and val_str.isdigit():
+                val = int(val_str)
+                # Ignore unconstrained default (~2^63 - 4096)
+                if val < (1 << 60):
+                    cgroup_limit_bytes = val
         except Exception:
             pass
 
-    # Fallback defaults if all else fails
+    # Check cgroups usage
+    use_path = cgroup_usage_path
+    if use_path is None:
+        cg2_use = Path("/sys/fs/cgroup/memory.current")
+        cg1_use = Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+        if cg2_use.is_file():
+            use_path = cg2_use
+        elif cg1_use.is_file():
+            use_path = cg1_use
+
+    if use_path and use_path.is_file():
+        try:
+            val_str = use_path.read_text(encoding="utf-8").strip()
+            if val_str.isdigit():
+                cgroup_usage_bytes = int(val_str)
+        except Exception:
+            pass
+
+    # 3. Apply cgroup constraint if cgroup limit is lower than MemTotal
+    if cgroup_limit_bytes is not None:
+        if total_bytes is None or cgroup_limit_bytes < total_bytes:
+            total_bytes = cgroup_limit_bytes
+
+        if cgroup_usage_bytes is not None:
+            cgroup_avail = max(0, cgroup_limit_bytes - cgroup_usage_bytes)
+            if available_bytes is not None:
+                available_bytes = min(available_bytes, cgroup_avail)
+            else:
+                available_bytes = cgroup_avail
+
+    # 4. Fallback to psutil (Windows / macOS or environments without /proc/meminfo)
+    if total_bytes is None or available_bytes is None:
+        if psutil is not None:
+            try:
+                vm = psutil.virtual_memory()
+                if total_bytes is None:
+                    total_bytes = vm.total
+                if available_bytes is None:
+                    available_bytes = vm.available
+            except Exception:
+                pass
+
+    # Defaults if completely unavailable
     if total_bytes is None:
         total_bytes = 16 * 1024 * 1024 * 1024
-    if used_bytes is None:
-        used_bytes = 4 * 1024 * 1024 * 1024
     if available_bytes is None:
-        available_bytes = max(0, total_bytes - used_bytes)
+        available_bytes = total_bytes // 2
 
     gb = 1024.0 * 1024.0 * 1024.0
     return HostRAMInfo(
         total_ram_gb=round(total_bytes / gb, 2),
         available_ram_gb=round(available_bytes / gb, 2),
-        used_ram_gb=round(used_bytes / gb, 2),
     )
 
 
 def log_host_ram_stage(stage_name: str) -> None:
-    """Log used and available host RAM at given load/execution stage."""
+    """Log available and total host RAM at given load/execution stage (never cache-inflated used)."""
     ram = get_host_ram_info()
     logger.info(
-        "[HOST RAM %s] Used: %.2f GB | Available: %.2f GB / Total: %.2f GB",
+        "[HOST RAM %s] Available: %.2f GB / Total: %.2f GB",
         stage_name,
-        ram.used_ram_gb,
         ram.available_ram_gb,
         ram.total_ram_gb,
     )
