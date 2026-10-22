@@ -203,7 +203,7 @@ def run_mode_subprocess(
 
     # 4. Execute subprocess
     t0 = time.time()
-    proc = subprocess.run(cmd, env=os.environ.copy(), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=str(_REPO_ROOT), env=os.environ.copy(), capture_output=True, text=True)
     wall_time = time.time() - t0
 
     if proc.returncode != 0:
