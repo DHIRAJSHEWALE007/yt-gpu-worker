@@ -362,6 +362,7 @@ def run_style_benchmark(
     allow_test: bool = False,
     allow_noncommercial: bool = False,
     gpus: Optional[List[int]] = None,
+    engines: Optional[List[str]] = None,
 ) -> None:
     """Execute style test pack across both engines, apply Pillow typography overlays, and output contact sheet."""
     default_pack = _REPO_ROOT / "packs" / "style_test_pack.json"
@@ -370,6 +371,11 @@ def run_style_benchmark(
         raise FileNotFoundError(f"Style test pack not found at {p_path}")
 
     pack = load_pack(p_path)
+    if engines:
+        pack.items = [
+            it for it in pack.items
+            if it.engine in engines or any(eng in it.id for eng in engines)
+        ]
     out_dir = output_dir or (_REPO_ROOT / "outputs" / "style_test")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -413,6 +419,7 @@ def main() -> None:
     parser.add_argument("--gpus", type=int, nargs="*", default=None, help="GPU device indices")
     parser.add_argument("--test", action="store_true", help="Allow test_only mock engines")
     parser.add_argument("--allow-noncommercial", action="store_true", help="Allow non-commercial engines")
+    parser.add_argument("--engines", nargs="*", default=None, help="Filter engines (e.g. sdxl_lightning flux2_klein)")
     args = parser.parse_args()
 
     pack_p = Path(args.pack) if args.pack else None
@@ -424,6 +431,7 @@ def main() -> None:
         allow_test=args.test,
         allow_noncommercial=args.allow_noncommercial,
         gpus=args.gpus,
+        engines=args.engines,
     )
 
 

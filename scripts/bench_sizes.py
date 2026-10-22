@@ -196,7 +196,10 @@ def run_size_benchmark_for_engine(
         successful = [r for r in results if r.status == "success"]
 
         if len(successful) == 0:
-            raise RuntimeError(f"0 successful items produced for {engine_id} @ {size_label}")
+            err_details = [f"Item {r.item_id}: {r.error}" for r in results if r.error]
+            detail_str = "\n".join(err_details[:5]) if err_details else "No individual error recorded"
+            logger.error("[%s @ %s] Subprocess produced 0 successful items:\n%s", engine_id, size_label, detail_str)
+            raise RuntimeError(f"0 successful items produced for {engine_id} @ {size_label}:\n{detail_str}")
 
         # Exclude first item (warmup / compilation) to obtain steady seconds per item
         steady_items = successful[1:] if len(successful) > 1 else successful
@@ -206,11 +209,18 @@ def run_size_benchmark_for_engine(
         # Peak VRAM per GPU
         peak_vram_per_gpu: Dict[str, float] = {}
         for g_idx in target_gpus:
-            gpu_res = [r.peak_vram_mb for r in successful if getattr(r, "peak_vram_mb", None) is not None]
+            gpu_res = [r.peak_vram_mb for r in successful if getattr(r, "peak_vram_mb", None) is not None and r.peak_vram_mb > 0]
             if gpu_res:
                 peak_vram_per_gpu[f"gpu_{g_idx}"] = round(max(gpu_res) / 1024.0, 2)
             else:
-                peak_vram_per_gpu[f"gpu_{g_idx}"] = 0.0
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        peak_vram_per_gpu[f"gpu_{g_idx}"] = round(torch.cuda.max_memory_allocated(g_idx) / (1024.0**3), 2)
+                    else:
+                        peak_vram_per_gpu[f"gpu_{g_idx}"] = 0.0
+                except Exception:
+                    peak_vram_per_gpu[f"gpu_{g_idx}"] = 0.0
 
         logger.info("[RESULT] %s @ %s: steady %.2f s/item | wall: %.1fs | peak VRAM: %s",
                     engine_id, size_label, steady_sec, wall_time, peak_vram_per_gpu)

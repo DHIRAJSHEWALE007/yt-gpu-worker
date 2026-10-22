@@ -395,6 +395,16 @@ class PackRunner:
                     out_path, retried_oom, fallback_applied, err_msg = self._execute_item_with_oom_recovery(engine, item)
                     exec_time = time.time() - t0
 
+                    # Sample peak VRAM allocated during item generation
+                    peak_vram_mb = None
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            target_gpu = self.gpu_index if self.gpu_index is not None else 0
+                            peak_vram_mb = round(torch.cuda.max_memory_allocated(target_gpu) / (1024.0 * 1024.0), 2)
+                    except Exception:
+                        pass
+
                     if out_path and out_path.is_file():
                         res = Result(
                             item_id=item.id,
@@ -402,6 +412,7 @@ class PackRunner:
                             output_path=str(out_path),
                             engine=item.engine,
                             execution_time_seconds=round(exec_time, 2),
+                            peak_vram_mb=peak_vram_mb,
                             retried_oom=retried_oom,
                             fallback_applied=fallback_applied,
                             width=item.width,
@@ -415,6 +426,7 @@ class PackRunner:
                             error=err_msg or "Unknown generation failure",
                             engine=item.engine,
                             execution_time_seconds=round(exec_time, 2),
+                            peak_vram_mb=peak_vram_mb,
                             retried_oom=retried_oom,
                             fallback_applied=fallback_applied,
                             width=item.width,

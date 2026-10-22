@@ -122,19 +122,12 @@ def get_host_ram_info(
         except Exception:
             pass
 
-    # Check cgroups usage
-    use_path = cgroup_usage_path
-    if use_path is None:
-        cg2_use = Path("/sys/fs/cgroup/memory.current")
-        cg1_use = Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")
-        if cg2_use.is_file():
-            use_path = cg2_use
-        elif cg1_use.is_file():
-            use_path = cg1_use
-
-    if use_path and use_path.is_file():
+    # Check cgroups usage only if explicitly provided (e.g. synthetic test)
+    # Never auto-read memory.current or memory.usage_in_bytes in live production because
+    # they include Linux page cache (inactive_file), which inflates used memory and causes false RAM guard rejections.
+    if cgroup_usage_path is not None and cgroup_usage_path.is_file():
         try:
-            val_str = use_path.read_text(encoding="utf-8").strip()
+            val_str = cgroup_usage_path.read_text(encoding="utf-8").strip()
             if val_str.isdigit():
                 cgroup_usage_bytes = int(val_str)
         except Exception:
@@ -146,11 +139,15 @@ def get_host_ram_info(
             total_bytes = cgroup_limit_bytes
 
         if cgroup_usage_bytes is not None:
+            # Synthetic test path with explicit usage file
             cgroup_avail = max(0, cgroup_limit_bytes - cgroup_usage_bytes)
             if available_bytes is not None:
                 available_bytes = min(available_bytes, cgroup_avail)
             else:
                 available_bytes = cgroup_avail
+        elif available_bytes is not None and available_bytes > cgroup_limit_bytes:
+            # Live container path: clamp available to container limit when limit is lower
+            available_bytes = cgroup_limit_bytes
 
     # 4. Fallback to psutil (Windows / macOS or environments without /proc/meminfo)
     if total_bytes is None or available_bytes is None:
