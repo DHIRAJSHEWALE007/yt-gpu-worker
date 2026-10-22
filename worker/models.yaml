@@ -63,6 +63,8 @@ models:
       768x768: 6.4
       1024x1024: 8.7
       832x1216: 9.1
+      1344x768: 3.5
+      768x1344: 3.6
     parallel_mode: process_per_gpu
     vae_fix_revision: 207b116dae70ace3637169f1ddd2434b91b3a8cd
     vae_fix_license: MIT
@@ -130,6 +132,8 @@ models:
       768x768: 10.6
       1024x1024: 15.8
       832x1216: 16.1
+      1344x768: 12.4
+      768x1344: 12.4
     parallel_mode: process_per_gpu
     offload: none
     resident_vram_gb: 10.0
