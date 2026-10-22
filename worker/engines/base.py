@@ -98,6 +98,7 @@ def safe_apply_gpu_optimizations(
     target_device: str = "cuda",
     gpu_id: int = 0,
     offload: str = "auto",
+    resident_vram_gb: float = 8.0,
     min_vram_gb: float = 8.0,
 ) -> None:
     """Apply VAE tiling, slicing, and CPU offload idempotently according to offload policy (auto | none | model)."""
@@ -131,20 +132,21 @@ def safe_apply_gpu_optimizations(
             gpus = detect_gpus()
             target_gpu = gpus[gpu_id] if (gpus and gpu_id < len(gpus)) else (gpus[0] if gpus else None)
             free_vram_gb = (target_gpu.free_vram_mb / 1024.0) if target_gpu else 0.0
-            # Leave 2 GB headroom: keep everything on GPU if free_vram >= min_vram_gb + 2.0
-            if free_vram_gb >= (min_vram_gb + 2.0):
+            # Leave 2 GB headroom: keep everything on GPU if free_vram >= resident_vram_gb + 2.0
+            benchmark_vram = resident_vram_gb if resident_vram_gb > 0 else min_vram_gb
+            if free_vram_gb >= (benchmark_vram + 2.0):
                 logger.info(
-                    "[OFFLOAD AUTO] Model components fit comfortably (free VRAM: %.1f GB >= %.1f GB + 2.0 GB headroom). Keeping everything on %s with offload=none.",
+                    "[OFFLOAD AUTO] Model components fit comfortably (free VRAM: %.1f GB >= %.1f GB resident + 2.0 GB headroom). Keeping everything on %s with offload=none.",
                     free_vram_gb,
-                    min_vram_gb,
+                    benchmark_vram,
                     target_device,
                 )
                 should_offload = False
             else:
                 logger.info(
-                    "[OFFLOAD AUTO] Free VRAM (%.1f GB) is tight (< %.1f GB + 2.0 GB headroom). Using model CPU offload.",
+                    "[OFFLOAD AUTO] Free VRAM (%.1f GB) is tight (< %.1f GB resident + 2.0 GB headroom). Using model CPU offload.",
                     free_vram_gb,
-                    min_vram_gb,
+                    benchmark_vram,
                 )
                 should_offload = True
 
@@ -203,7 +205,8 @@ class Engine(ABC):
         self.default_guidance_scale: float = float(self.config.get("default_guidance_scale", 0.0))
         self.ram_estimate_gb: float = float(self.config.get("ram_estimate_gb", 12.0))
         self.requires_native_bf16: bool = bool(self.config.get("requires_native_bf16", False))
-        self.offload: str = str(self.config.get("offload", "auto")).lower()
+        self.offload: str = str(self.config.get("offload", "none")).lower()
+        self.resident_vram_gb: float = float(self.config.get("resident_vram_gb", self.min_vram_gb))
 
         min_cc = self.config.get("min_compute_capability")
         if isinstance(min_cc, (list, tuple)) and len(min_cc) >= 2:
@@ -257,6 +260,7 @@ class Engine(ABC):
                 target_device=target_device,
                 gpu_id=gpu_id,
                 offload=self.offload,
+                resident_vram_gb=self.resident_vram_gb,
                 min_vram_gb=self.min_vram_gb,
             )
 

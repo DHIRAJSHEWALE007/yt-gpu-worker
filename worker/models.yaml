@@ -28,6 +28,7 @@ models:
       on Turing (T4) or Pascal (P100). Disabled by default on T4.
     description: High-efficiency 9-step distilled DiT text-to-image foundation model.
     offload: auto
+    resident_vram_gb: 8.0
   sdxl_lightning:
     name: SDXL Lightning (4-step)
     role: volume_image
@@ -65,7 +66,9 @@ models:
     parallel_mode: process_per_gpu
     vae_fix_revision: 207b116dae70ace3637169f1ddd2434b91b3a8cd
     vae_fix_license: MIT
-    offload: auto
+    offload: none
+    resident_vram_gb: 8.0
+    cold_load_seconds: 105.0
   sdxl_turbo:
     name: SDXL-Turbo (Stability AI)
     role: test_only_noncommercial
@@ -127,7 +130,9 @@ models:
       1024x1024: 15.8
       832x1216: 16.1
     parallel_mode: single_process_multi_gpu
-    offload: auto
+    offload: none
+    resident_vram_gb: 10.0
+    cold_load_seconds: 156.0
   wan21_t2v_1_3b:
     name: Wan 2.1 1.3B Text-to-Video
     role: hero_clip
@@ -159,6 +164,8 @@ models:
     default_width: 848
     default_height: 480
     max_clips_per_run: 2
+    resident_vram_gb: 12.0
+    cold_load_seconds: 261.0
   wan22_ti2v5b:
     name: Wan 2.2 5B Text/Image-to-Video
     role: hero_clip
@@ -185,6 +192,7 @@ models:
     description: Future high-capacity 5B text-to-video diffusion pipeline.
     offload: auto
     max_clips_per_run: 2
+    resident_vram_gb: 20.0
   fake:
     name: CPU Mock Engine
     role: test
@@ -212,6 +220,7 @@ models:
     description: Mock CPU engine for unit tests and local development.
     parallel_mode: process_per_gpu
     offload: auto
+    resident_vram_gb: 0.1
 tiers:
   hero_scenes: flux2_klein
   text_scenes: flux2_klein
