@@ -134,8 +134,8 @@ def test_style_test_pack_and_contact_sheet(tmp_path: Path) -> None:
 
     # Verify 5 channel-style, 3 explainer prompts, and 3 no-text explainer variants
     channel_items = [it for it in sdxl_items if it.extra_params.get("category") == "channel_style"]
-    explainer_items = [it for it in sdxl_items if it.extra_params.get("category") == "explainer_diagram"]
-    notext_items = [it for it in sdxl_items if it.extra_params.get("category") == "explainer_diagram_notext"]
+    explainer_items = [it for it in sdxl_items if it.extra_params.get("category") in ("explainer_visual", "explainer_diagram")]
+    notext_items = [it for it in sdxl_items if it.extra_params.get("category") in ("explainer_visual_notext", "explainer_diagram_notext")]
     assert len(channel_items) == 5
     assert len(explainer_items) == 3
     assert len(notext_items) == 3
@@ -172,7 +172,8 @@ def test_style_test_pack_and_contact_sheet(tmp_path: Path) -> None:
     assert "SDXL-Lightning (volume_image)" in html_content
     assert "FLUX.2-klein-4B (default_image)" in html_content
     assert "Channel Style (Teal &amp; Orange)" in html_content or "Channel Style (Teal & Orange)" in html_content
-    assert "Explainer Technical Diagram" in html_content
+    assert "Explainer" in html_content
+    assert "Decoration Note" in html_content
 
 
 def test_pillow_diagram_overlay(tmp_path: Path) -> None:
@@ -190,3 +191,79 @@ def test_pillow_diagram_overlay(tmp_path: Path) -> None:
     with Image.open(result_path) as out:
         assert out.size == (512, 512)
         assert out.mode == "RGB"
+
+
+def test_models_yaml_matches_throughput_benchmark() -> None:
+    """Verify worker/models.yaml parallel_mode and offload match the latest throughput benchmark results.
+    
+    Fails if either engine's parallel_mode or offload differs from the recorded benchmark winning configuration.
+    """
+    from worker.engines import load_models_config
+
+    repo_root = Path(__file__).resolve().parent.parent
+    models = load_models_config()
+
+    for engine_id in ("sdxl_lightning", "flux2_klein"):
+        bench_file = repo_root / "outputs" / "throughput" / engine_id / "throughput_benchmark.json"
+        assert bench_file.is_file(), f"Throughput benchmark result not found at {bench_file}"
+
+        bench_data = json.loads(bench_file.read_text(encoding="utf-8"))
+        expected_mode = bench_data.get("faster_mode")
+        expected_offload = bench_data.get("faster_offload")
+
+        actual_mode = models[engine_id].get("parallel_mode")
+        actual_offload = models[engine_id].get("offload")
+
+        assert actual_mode == expected_mode, (
+            f"Engine '{engine_id}' parallel_mode in models.yaml ('{actual_mode}') "
+            f"differs from latest benchmark result ('{expected_mode}')"
+        )
+        assert actual_offload == expected_offload, (
+            f"Engine '{engine_id}' offload in models.yaml ('{actual_offload}') "
+            f"differs from latest benchmark result ('{expected_offload}')"
+        )
+
+
+def test_explainer_prompts_avoid_forbidden_words() -> None:
+    """Verify explainer visuals strictly avoid diagram, infographic, labeled, chart, and annotated."""
+    repo_root = Path(__file__).resolve().parent.parent
+    pack = load_pack(repo_root / "packs" / "style_test_pack.json")
+
+    forbidden_words = ["diagram", "infographic", "labeled", "chart", "annotated"]
+    explainer_items = [it for it in pack.items if "06" in it.id or "07" in it.id or "08" in it.id]
+    assert len(explainer_items) >= 6
+
+    for it in explainer_items:
+        prompt_lower = it.prompt.lower()
+        for forbidden in forbidden_words:
+            assert forbidden not in prompt_lower, (
+                f"Item '{it.id}' contains forbidden word '{forbidden}' in prompt: '{it.prompt}'"
+            )
+        assert "clean illustration of" in prompt_lower
+        assert "no text" in prompt_lower
+        assert "no letters" in prompt_lower
+        assert "no labels" in prompt_lower
+        assert "no captions" in prompt_lower
+        assert "no ui elements" in prompt_lower
+
+
+def test_pillow_overlay_refuses_labels_without_explicit_anchors(tmp_path: Path) -> None:
+    """Verify overlay_diagram_labels scales font to >=3% height and refuses labels without explicit anchors."""
+    from PIL import Image
+    from scripts.run_style_test import overlay_diagram_labels
+
+    bg_img = tmp_path / "test_refusal_bg.png"
+    Image.new("RGB", (800, 600), color=(15, 23, 42)).save(bg_img)
+    out_img = tmp_path / "test_refusal_out.png"
+
+    # Label 1 has explicit normalized anchor -> should render
+    # Label 2 has NO anchor -> must be refused/skipped
+    # Label 3 has out-of-range anchor -> must be refused/skipped
+    test_labels = [
+        {"text": "Valid Anchor Label", "x": 0.2, "y": 0.2, "anchor": (0.35, 0.45)},
+        {"text": "Missing Anchor Label", "x": 0.5, "y": 0.5},
+        {"text": "Invalid Anchor Label", "x": 0.7, "y": 0.7, "anchor": (1.5, -0.2)},
+    ]
+
+    res = overlay_diagram_labels(bg_img, out_img, test_labels)
+    assert res.is_file()

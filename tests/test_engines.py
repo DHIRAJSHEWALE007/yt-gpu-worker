@@ -201,10 +201,11 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert f["seconds_per_item"] == 15.8
     assert f["load_seconds"] == 52.0
     assert f["peak_vram_gb"] is None
-    assert f["parallel_mode"] == "single_process_multi_gpu"
+    assert f["parallel_mode"] == "process_per_gpu"
     assert f["offload"] == "none"
     assert f["resident_vram_gb"] == 10.0
     assert f["cold_load_seconds"] == 156.0
+    assert f["cold_start_seconds"] == 156.0
     assert "NF4" in f["notes"]
 
     # 3. Wan 2.1 1.3B checks
@@ -241,6 +242,7 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert s["offload"] == "none"
     assert s["resident_vram_gb"] == 8.0
     assert s["cold_load_seconds"] == 105.0
+    assert s["cold_start_seconds"] == 105.0
     assert s["parallel_mode"] == "process_per_gpu"
     assert s["repo_id"] == "ByteDance/SDXL-Lightning"
     assert s["revision"] == "c9a24f48e1c025556787b0c58dd67a091ece2e44"
