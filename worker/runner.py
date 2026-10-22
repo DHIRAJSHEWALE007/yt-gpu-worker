@@ -90,6 +90,8 @@ class PackRunner:
         allow_test_engines: bool = False,
         allow_noncommercial: bool = False,
         allow_slow_bf16: bool = False,
+        offload: Optional[str] = None,
+        allow_resume: bool = True,
     ) -> None:
         self.pack = pack
         self.output_dir = output_dir or Path(pack.output_dir)
@@ -100,6 +102,9 @@ class PackRunner:
         self.allow_test_engines = allow_test_engines
         self.allow_noncommercial = allow_noncommercial
         self.allow_slow_bf16 = allow_slow_bf16
+        self.offload = (offload.lower() if offload else None)
+        self.allow_resume = allow_resume
+        self.video_clips_rendered = 0
         self.models_config = _load_models_config()
 
         self.start_time = time.time()
@@ -193,8 +198,12 @@ class PackRunner:
                 f"Execution refused unless --allow-noncommercial flag or STUDIO_ALLOW_NONCOMMERCIAL=1 is passed."
             )
 
+        if self.offload:
+            cfg["offload"] = self.offload
         engine = get_engine(engine_id, config=cfg)
-        logger.info("Loading new engine weights for: %s...", engine_id)
+        if self.offload:
+            engine.offload = self.offload
+        logger.info("Loading new engine weights for: %s (offload=%s)...", engine_id, getattr(engine, 'offload', 'auto'))
         target_dev = None
         if self.gpu_index is not None:
             try:
@@ -291,6 +300,33 @@ class PackRunner:
                                    self.pack.max_runtime_minutes)
                     break
 
+                # Video guard: check max_clips_per_run
+                is_video = (item.media_type == "video" or item.engine in ("wan21_t2v_1_3b", "wan22_ti2v5b"))
+                if is_video:
+                    cfg = self.models_config.get(item.engine, {})
+                    max_clips = int(cfg.get("max_clips_per_run", 2))
+                    if self.video_clips_rendered >= max_clips:
+                        logger.warning(
+                            "[VIDEO GUARD] Skipping video item '%s': exceeds max_clips_per_run (%d). One 33-frame clip takes ~6-22 min on T4.",
+                            item.id,
+                            max_clips,
+                        )
+                        skip_res = Result(
+                            item_id=item.id,
+                            status="skipped",
+                            engine=item.engine,
+                            error=f"Skipped: exceeds max_clips_per_run ({max_clips}). Video generation takes ~6-22 min per clip on T4.",
+                            execution_time_seconds=0.0,
+                            width=item.width,
+                            height=item.height,
+                            seed=item.seed,
+                        )
+                        self._results_map[item.id] = skip_res
+                        append_result_atomic(skip_res, self.results_file)
+                        self.completed_count += 1
+                        continue
+                    self.video_clips_rendered += 1
+
                 # 2. Check if output already exists (Idempotency / Resumability)
                 expected_ext = "mp4" if item.media_type == "video" else "png"
                 expected_file = self.output_dir / f"{item.id}.{expected_ext}"
@@ -300,7 +336,7 @@ class PackRunner:
                     if alt_file.is_file() and alt_file.stat().st_size > 0:
                         expected_file = alt_file
 
-                if expected_file.is_file() and expected_file.stat().st_size > 0:
+                if self.allow_resume and expected_file.is_file() and expected_file.stat().st_size > 0:
                     logger.info("[RESUME] Skipping item %s — output already exists: %s", item.id, expected_file.name)
                     res = Result(
                         item_id=item.id,
@@ -381,6 +417,8 @@ def run_pack(
     allow_noncommercial: bool = False,
     allow_slow_bf16: bool = False,
     parallel_mode: Optional[str] = None,
+    offload: Optional[str] = None,
+    allow_resume: bool = True,
 ) -> List[Result]:
     """Top-level entrypoint to execute a Pack.
     
@@ -419,6 +457,8 @@ def run_pack(
             allow_test_engines=allow_test_engines,
             allow_noncommercial=allow_noncommercial,
             allow_slow_bf16=allow_slow_bf16,
+            offload=offload,
+            allow_resume=allow_resume,
         )
         return runner.run()
 
@@ -472,6 +512,8 @@ def run_pack(
                 allow_test_engines=allow_test_engines,
                 allow_noncommercial=allow_noncommercial,
                 allow_slow_bf16=allow_slow_bf16,
+                offload=offload,
+                allow_resume=allow_resume,
             )
             res = runner.run()
             all_results.extend(res)
@@ -500,6 +542,10 @@ def run_pack(
                 cmd.append("--allow-noncommercial")
             if allow_slow_bf16:
                 cmd.append("--allow-slow-bf16")
+            if offload:
+                cmd.extend(["--offload", str(offload)])
+            if not allow_resume:
+                cmd.append("--no-resume")
 
             child_env = os.environ.copy()
             child_env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
@@ -539,6 +585,8 @@ if __name__ == "__main__":
     parser.add_argument("--allow-noncommercial", action="store_true", help="Allow engines with commercial_ok: false (e.g. sdxl_turbo)")
     parser.add_argument("--allow-slow-bf16", action="store_true", help="Allow software bf16 emulation on compute capability < 8.0 GPUs")
     parser.add_argument("--parallel-mode", type=str, choices=["single_process_multi_gpu", "process_per_gpu"], default=None, help="Execution mode for multi-GPU setups")
+    parser.add_argument("--offload", type=str, choices=["auto", "none", "model"], default=None, help="Offload policy override (auto | none | model)")
+    parser.add_argument("--no-resume", action="store_true", help="Disable resuming from existing rendered assets")
 
     args = parser.parse_args()
 
@@ -571,6 +619,8 @@ if __name__ == "__main__":
         allow_noncommercial=args.allow_noncommercial,
         allow_slow_bf16=args.allow_slow_bf16,
         parallel_mode=args.parallel_mode,
+        offload=args.offload,
+        allow_resume=not args.no_resume,
     )
     print(f"\nExecution complete! Rendered {len(results)} items into {target_out.resolve()}:")
     for r in results:

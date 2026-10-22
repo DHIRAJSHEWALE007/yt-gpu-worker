@@ -93,8 +93,14 @@ def safe_enable_vae_slicing(pipe: Any) -> bool:
     return False
 
 
-def safe_apply_gpu_optimizations(pipe: Any, target_device: str = "cuda", gpu_id: int = 0) -> None:
-    """Apply VAE tiling, slicing, and CPU offload idempotently without duplicating hooks."""
+def safe_apply_gpu_optimizations(
+    pipe: Any,
+    target_device: str = "cuda",
+    gpu_id: int = 0,
+    offload: str = "auto",
+    min_vram_gb: float = 8.0,
+) -> None:
+    """Apply VAE tiling, slicing, and CPU offload idempotently according to offload policy (auto | none | model)."""
     if pipe is None:
         return
 
@@ -114,21 +120,56 @@ def safe_apply_gpu_optimizations(pipe: Any, target_device: str = "cuda", gpu_id:
             or (isinstance(getattr(pipe, "hf_device_map", None), dict) and bool(pipe.hf_device_map))
         )
 
+        offload_mode = (offload or "auto").lower()
+        should_offload = False
+
+        if offload_mode == "model":
+            should_offload = True
+        elif offload_mode == "none":
+            should_offload = False
+        else:  # "auto"
+            gpus = detect_gpus()
+            target_gpu = gpus[gpu_id] if (gpus and gpu_id < len(gpus)) else (gpus[0] if gpus else None)
+            free_vram_gb = (target_gpu.free_vram_mb / 1024.0) if target_gpu else 0.0
+            # Leave 2 GB headroom: keep everything on GPU if free_vram >= min_vram_gb + 2.0
+            if free_vram_gb >= (min_vram_gb + 2.0):
+                logger.info(
+                    "[OFFLOAD AUTO] Model components fit comfortably (free VRAM: %.1f GB >= %.1f GB + 2.0 GB headroom). Keeping everything on %s with offload=none.",
+                    free_vram_gb,
+                    min_vram_gb,
+                    target_device,
+                )
+                should_offload = False
+            else:
+                logger.info(
+                    "[OFFLOAD AUTO] Free VRAM (%.1f GB) is tight (< %.1f GB + 2.0 GB headroom). Using model CPU offload.",
+                    free_vram_gb,
+                    min_vram_gb,
+                )
+                should_offload = True
+
         if not already_offloaded:
-            try:
-                if hasattr(pipe, "enable_model_cpu_offload") and callable(getattr(pipe, "enable_model_cpu_offload")):
+            if should_offload:
+                try:
+                    if hasattr(pipe, "enable_model_cpu_offload") and callable(getattr(pipe, "enable_model_cpu_offload")):
+                        try:
+                            pipe.enable_model_cpu_offload(gpu_id=gpu_id)
+                        except TypeError:
+                            pipe.enable_model_cpu_offload()
+                        pipe._offload_hook_installed = True
+                        log_host_ram_stage(f"after enable_model_cpu_offload(gpu_id={gpu_id})")
+                    else:
+                        pipe.to(target_device)
+                except Exception as exc:
+                    logger.warning("enable_model_cpu_offload failed (%s); moving directly to %s", exc, target_device)
                     try:
-                        pipe.enable_model_cpu_offload(gpu_id=gpu_id)
-                    except TypeError:
-                        pipe.enable_model_cpu_offload()
-                    pipe._offload_hook_installed = True
-                    log_host_ram_stage(f"after enable_model_cpu_offload(gpu_id={gpu_id})")
-                else:
-                    pipe.to(target_device)
-            except Exception as exc:
-                logger.warning("enable_model_cpu_offload failed (%s); moving directly to %s", exc, target_device)
+                        pipe.to(target_device)
+                    except Exception as to_exc:
+                        logger.warning("pipe.to(%s) failed: %s", target_device, to_exc)
+            else:
                 try:
                     pipe.to(target_device)
+                    log_host_ram_stage(f"after pipe.to({target_device}) with offload=none")
                 except Exception as to_exc:
                     logger.warning("pipe.to(%s) failed: %s", target_device, to_exc)
     else:
@@ -162,6 +203,7 @@ class Engine(ABC):
         self.default_guidance_scale: float = float(self.config.get("default_guidance_scale", 0.0))
         self.ram_estimate_gb: float = float(self.config.get("ram_estimate_gb", 12.0))
         self.requires_native_bf16: bool = bool(self.config.get("requires_native_bf16", False))
+        self.offload: str = str(self.config.get("offload", "auto")).lower()
 
         min_cc = self.config.get("min_compute_capability")
         if isinstance(min_cc, (list, tuple)) and len(min_cc) >= 2:
@@ -210,7 +252,13 @@ class Engine(ABC):
     def apply_pipeline_optimizations(self, target_device: str, gpu_id: int = 0) -> None:
         """Safely apply diffusers optimizations idempotently without crashing if methods are missing."""
         if self.pipe is not None:
-            safe_apply_gpu_optimizations(self.pipe, target_device=target_device, gpu_id=gpu_id)
+            safe_apply_gpu_optimizations(
+                self.pipe,
+                target_device=target_device,
+                gpu_id=gpu_id,
+                offload=self.offload,
+                min_vram_gb=self.min_vram_gb,
+            )
 
     @abstractmethod
     def load(self, device: Optional[str] = None, dtype: Optional[Any] = None) -> None:

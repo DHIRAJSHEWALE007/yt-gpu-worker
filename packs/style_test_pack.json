@@ -210,6 +210,90 @@
         "category": "explainer_diagram",
         "title": "Human Eye Optical Optics"
       }
+    },
+    {
+      "id": "style_sdxl_06_notext",
+      "engine": "sdxl_lightning",
+      "prompt": "Educational cross-section diagram of tectonic plate subduction causing volcanism, magma chamber, oceanic crust descending into mantle, clean vector infographic with blank rectangular callout boxes, no text, no words, clean teal and orange palette",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5006,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram_notext",
+        "base_scene": 6,
+        "title": "Tectonic Subduction & Volcanism (No-Text Base)"
+      }
+    },
+    {
+      "id": "style_sdxl_07_notext",
+      "engine": "sdxl_lightning",
+      "prompt": "Isometric technical flowchart diagram of distributed computing consensus protocol, interconnected server nodes with packet flow arrows and blank rounded callout cards, no text, no words, clean vector schematic",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5007,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram_notext",
+        "base_scene": 7,
+        "title": "Distributed Consensus Architecture (No-Text Base)"
+      }
+    },
+    {
+      "id": "style_sdxl_08_notext",
+      "engine": "sdxl_lightning",
+      "prompt": "Detailed anatomical cross-section diagram of the human eye focusing light rays through the crystalline lens onto the retina, clean blank callout label pointers, no text, no words, educational medical infographic",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5008,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram_notext",
+        "base_scene": 8,
+        "title": "Human Eye Optical Optics (No-Text Base)"
+      }
+    },
+    {
+      "id": "style_flux_06_notext",
+      "engine": "flux2_klein",
+      "prompt": "Educational cross-section diagram of tectonic plate subduction causing volcanism, magma chamber, oceanic crust descending into mantle, clean vector infographic with blank rectangular callout boxes, no text, no words, clean teal and orange palette",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5006,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram_notext",
+        "base_scene": 6,
+        "title": "Tectonic Subduction & Volcanism (No-Text Base)"
+      }
+    },
+    {
+      "id": "style_flux_07_notext",
+      "engine": "flux2_klein",
+      "prompt": "Isometric technical flowchart diagram of distributed computing consensus protocol, interconnected server nodes with packet flow arrows and blank rounded callout cards, no text, no words, clean vector schematic",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5007,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram_notext",
+        "base_scene": 7,
+        "title": "Distributed Consensus Architecture (No-Text Base)"
+      }
+    },
+    {
+      "id": "style_flux_08_notext",
+      "engine": "flux2_klein",
+      "prompt": "Detailed anatomical cross-section diagram of the human eye focusing light rays through the crystalline lens onto the retina, clean blank callout label pointers, no text, no words, educational medical infographic",
+      "width": 1024,
+      "height": 1024,
+      "seed": 5008,
+      "media_type": "image",
+      "extra_params": {
+        "category": "explainer_diagram_notext",
+        "base_scene": 8,
+        "title": "Human Eye Optical Optics (No-Text Base)"
+      }
     }
   ]
 }

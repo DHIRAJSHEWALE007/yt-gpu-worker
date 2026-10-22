@@ -34,7 +34,7 @@ def test_throughput_benchmark_execution(tmp_path: Path, monkeypatch: pytest.Monk
     recorded_updates = {}
     monkeypatch.setattr(
         "scripts.bench_throughput.update_models_yaml_parallel_mode",
-        lambda e, m: recorded_updates.update({e: m}),
+        lambda e, m, *args, **kwargs: recorded_updates.update({e: (m, kwargs.get("chosen_offload", "auto"))}),
     )
 
     out_dir = tmp_path / "throughput_fake"
@@ -49,22 +49,32 @@ def test_throughput_benchmark_execution(tmp_path: Path, monkeypatch: pytest.Monk
     assert report["item_count"] == 20
     assert "single_process_multi_gpu" in report["modes"]
     assert "process_per_gpu" in report["modes"]
+    assert "process_per_gpu_no_offload" in report["modes"]
 
     mode_a = report["modes"]["single_process_multi_gpu"]
     mode_b = report["modes"]["process_per_gpu"]
+    mode_c = report["modes"]["process_per_gpu_no_offload"]
 
     assert mode_a["successful_items"] == 20
     assert mode_b["successful_items"] == 20
+    assert mode_c["successful_items"] == 20
     assert mode_a["failed_items"] == 0
     assert mode_b["failed_items"] == 0
+    assert mode_c["failed_items"] == 0
     assert mode_a["oom_occurred"] is False
     assert mode_b["oom_occurred"] is False
+    assert mode_c["oom_occurred"] is False
     assert mode_a["total_time_seconds"] > 0
     assert mode_b["total_time_seconds"] > 0
+    assert mode_c["total_time_seconds"] > 0
     assert mode_a["items_per_second"] > 0
     assert mode_b["items_per_second"] > 0
+    assert mode_c["items_per_second"] > 0
+    assert "available_host_ram_gb" in mode_c
+    assert "steady_state_seconds_per_item_per_gpu" in mode_c
 
     assert report["faster_mode"] in ("single_process_multi_gpu", "process_per_gpu")
+    assert "faster_offload" in report
     assert "selection_reason" in report
 
     # Verify JSON report was written to disk
@@ -115,18 +125,20 @@ def test_style_test_pack_and_contact_sheet(tmp_path: Path) -> None:
     assert pack_path.is_file()
 
     pack = load_pack(pack_path)
-    assert len(pack.items) == 16  # 8 SDXL-Lightning + 8 FLUX.2-klein
+    assert len(pack.items) == 22  # 11 SDXL-Lightning + 11 FLUX.2-klein (including no-text diagram variants)
 
     sdxl_items = [it for it in pack.items if it.engine == "sdxl_lightning"]
     flux_items = [it for it in pack.items if it.engine == "flux2_klein"]
-    assert len(sdxl_items) == 8
-    assert len(flux_items) == 8
+    assert len(sdxl_items) == 11
+    assert len(flux_items) == 11
 
-    # Verify 5 channel-style and 3 explainer prompts
+    # Verify 5 channel-style, 3 explainer prompts, and 3 no-text explainer variants
     channel_items = [it for it in sdxl_items if it.extra_params.get("category") == "channel_style"]
     explainer_items = [it for it in sdxl_items if it.extra_params.get("category") == "explainer_diagram"]
+    notext_items = [it for it in sdxl_items if it.extra_params.get("category") == "explainer_diagram_notext"]
     assert len(channel_items) == 5
     assert len(explainer_items) == 3
+    assert len(notext_items) == 3
 
     # Verify channel style suffix is present in all channel style prompts
     suffix = "flat vector illustration, consistent teal and orange palette, no text, no logos"
@@ -161,3 +173,20 @@ def test_style_test_pack_and_contact_sheet(tmp_path: Path) -> None:
     assert "FLUX.2-klein-4B (default_image)" in html_content
     assert "Channel Style (Teal &amp; Orange)" in html_content or "Channel Style (Teal & Orange)" in html_content
     assert "Explainer Technical Diagram" in html_content
+
+
+def test_pillow_diagram_overlay(tmp_path: Path) -> None:
+    """Verify overlay_diagram_labels helper draws pills, leader lines, and points cleanly."""
+    from PIL import Image
+    from scripts.run_style_test import overlay_diagram_labels, DIAGRAM_LABELS_MAP
+
+    bg_img = tmp_path / "test_diagram.png"
+    Image.new("RGB", (512, 512), color=(20, 30, 45)).save(bg_img)
+
+    out_annotated = tmp_path / "test_annotated.png"
+    result_path = overlay_diagram_labels(bg_img, out_annotated, DIAGRAM_LABELS_MAP[6])
+
+    assert result_path.is_file()
+    with Image.open(result_path) as out:
+        assert out.size == (512, 512)
+        assert out.mode == "RGB"

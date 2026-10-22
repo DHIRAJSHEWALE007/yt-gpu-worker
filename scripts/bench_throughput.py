@@ -1,16 +1,18 @@
-"""scripts/bench_throughput.py — Throughput test across parallel modes (single_process vs process_per_gpu).
+"""scripts/bench_throughput.py — Throughput test across parallel modes and offload settings.
 
-Runs a 20-item pack for each engine in:
-  (a) One process with both GPUs (single_process_multi_gpu)
-  (b) Two processes, one per GPU via CUDA_VISIBLE_DEVICES (process_per_gpu)
+Benchmarks:
+  (a) Mode A: single_process_multi_gpu (1 process, all GPUs visible)
+  (b) Mode B: process_per_gpu (2 processes, 1 per GPU, offload: auto)
+  (c) Mode C: process_per_gpu_no_offload (2 processes, 1 per GPU, offload: none)
 
-Logs:
-  - Total elapsed time
-  - Items per second (throughput)
-  - Per-process RAM consumption (peak host RAM)
-  - Any OOM occurrences
-
-Determines the faster, OOM-free mode per engine and updates worker/models.yaml with 'parallel_mode'.
+Key guarantees:
+  - Runs each mode in a fresh subprocess with its own clean output directory.
+  - Resume disabled (--no-resume) so every item is freshly rendered.
+  - Warms the model weights cache before benchmark timing.
+  - Excludes model load time and the first warmup item to report steady-state seconds per item per GPU.
+  - Measures effective items per second and logs available/used host RAM.
+  - Fails loudly if any mode produces 0 successful items; never updates models.yaml on failure.
+  - Stores the fastest OOM-free mode and offload policy in worker/models.yaml.
 """
 
 from __future__ import annotations
@@ -18,7 +20,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
+import shutil
+import statistics
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -31,8 +37,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from worker.memory import clear_gpu_memory, detect_gpus, get_host_ram_info
-from worker.runner import run_pack
-from worker.schema import Item, Pack
+from worker.schema import Item, Pack, load_results
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -53,7 +58,7 @@ BENCHMARK_PROMPTS = [
     "Studio product photograph of vintage chrome mechanical watch on slate stone",
     "Golden eagle soaring majestically over rugged pine forest autumn mountains",
     "Interior view of a sleek futuristic orbital space station hydroponics garden",
-    "A bustling Victorian London cobblestone street with steam omnibuses in morning fog",
+    "A bustling Victorian London cobblestone street with steam omnibus in morning fog",
     "Abstract macro fluid art with swirling turquoise and amber metallic inks",
     "A majestic snow leopard resting camouflaged on a Himalayan rocky ledge",
     "Steampunk mechanical ornithopter flying through golden morning clouds",
@@ -61,8 +66,8 @@ BENCHMARK_PROMPTS = [
 ]
 
 
-def update_models_yaml_parallel_mode(engine_id: str, chosen_mode: str) -> None:
-    """Atomically record parallel_mode decision into worker/models.yaml."""
+def update_models_yaml_parallel_mode(engine_id: str, chosen_mode: str, chosen_offload: str = "auto") -> None:
+    """Atomically record parallel_mode and offload decisions into worker/models.yaml."""
     models_path = _REPO_ROOT / "worker" / "models.yaml"
     if not models_path.is_file():
         logger.warning("Could not find %s to update parallel_mode", models_path)
@@ -72,8 +77,15 @@ def update_models_yaml_parallel_mode(engine_id: str, chosen_mode: str) -> None:
         data = yaml.safe_load(models_path.read_text(encoding="utf-8"))
         if engine_id in data.get("models", {}):
             data["models"][engine_id]["parallel_mode"] = chosen_mode
+            if chosen_offload:
+                data["models"][engine_id]["offload"] = chosen_offload
             models_path.write_text(yaml.dump(data, sort_keys=False, indent=2), encoding="utf-8")
-            logger.info("Updated worker/models.yaml for '%s': parallel_mode -> '%s'", engine_id, chosen_mode)
+            logger.info(
+                "Updated worker/models.yaml for '%s': parallel_mode -> '%s', offload -> '%s'",
+                engine_id,
+                chosen_mode,
+                chosen_offload,
+            )
     except Exception as exc:
         logger.error("Failed to update models.yaml: %s", exc)
 
@@ -101,6 +113,155 @@ def create_20_item_pack(engine_id: str, out_dir: Path, width: int = 1024, height
     )
 
 
+def warm_weights_cache(engine_id: str, allow_test: bool = False, allow_noncommercial: bool = False) -> float:
+    """Run a single 1-item warmup generation to ensure weights are cached on disk before timed runs."""
+    logger.info(">>> Warming weights cache for engine: %s...", engine_id)
+    warmup_dir = _REPO_ROOT / "outputs" / "throughput" / ".warmup"
+    if warmup_dir.exists():
+        shutil.rmtree(warmup_dir, ignore_errors=True)
+    warmup_dir.mkdir(parents=True, exist_ok=True)
+
+    warm_item = Item(
+        id=f"{engine_id}_warmup_shot",
+        engine=engine_id,
+        prompt="A simple warm up prompt to cache diffusion model weights on disk",
+        width=512,
+        height=512,
+        seed=1000,
+        media_type="image",
+    )
+    warm_pack = Pack(pack_id=f"warmup_{engine_id}", items=[warm_item], output_dir=str(warmup_dir))
+    pack_path = warmup_dir / "warmup_pack.json"
+    pack_path.write_text(warm_pack.model_dump_json(indent=2), encoding="utf-8")
+    res_path = warmup_dir / "warmup_results.json"
+
+    cmd = [
+        sys.executable,
+        "-m", "worker.runner",
+        "--pack", str(pack_path),
+        "--out", str(warmup_dir),
+        "--results", str(res_path),
+        "--no-resume",
+    ]
+    if allow_test:
+        cmd.append("--test")
+    if allow_noncommercial:
+        cmd.append("--allow-noncommercial")
+
+    t0 = time.time()
+    subprocess.run(cmd, env=os.environ.copy(), check=False)
+    warmup_time = time.time() - t0
+    logger.info("Weights cache warmed for %s in %.2fs.", engine_id, warmup_time)
+    return warmup_time
+
+
+def run_mode_subprocess(
+    engine_id: str,
+    mode_name: str,
+    output_dir: Path,
+    parallel_mode: str,
+    offload: Optional[str] = None,
+    gpus: Optional[List[int]] = None,
+    allow_test: bool = False,
+    allow_noncommercial: bool = False,
+) -> Dict[str, Any]:
+    """Execute a single throughput benchmark mode in an isolated, fresh subprocess with resume disabled."""
+    logger.info(">>> Starting [%s] in fresh subprocess (parallel_mode=%s, offload=%s)...", mode_name, parallel_mode, offload or "auto")
+
+    # 1. Clean output directory to guarantee resume is disabled
+    if output_dir.exists():
+        shutil.rmtree(output_dir, ignore_errors=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. Prepare 20-item pack
+    pack = create_20_item_pack(engine_id, output_dir)
+    pack_path = output_dir / "bench_pack.json"
+    pack_path.write_text(pack.model_dump_json(indent=2), encoding="utf-8")
+    results_path = output_dir / "results.json"
+
+    # 3. Assemble command
+    cmd = [
+        sys.executable,
+        "-m", "worker.runner",
+        "--pack", str(pack_path),
+        "--out", str(output_dir),
+        "--results", str(results_path),
+        "--parallel-mode", parallel_mode,
+        "--no-resume",
+    ]
+    if offload:
+        cmd.extend(["--offload", str(offload)])
+    if allow_test:
+        cmd.append("--test")
+    if allow_noncommercial:
+        cmd.append("--allow-noncommercial")
+    if gpus:
+        cmd.append("--gpus")
+        cmd.extend([str(g) for g in gpus])
+
+    clear_gpu_memory()
+
+    # 4. Execute subprocess
+    t0 = time.time()
+    proc = subprocess.run(cmd, env=os.environ.copy(), capture_output=True, text=True)
+    wall_time = time.time() - t0
+
+    if proc.returncode != 0:
+        logger.error("[%s] Subprocess exited with code %d. Stderr:\n%s", mode_name, proc.returncode, proc.stderr[-2000:])
+
+    # 5. Load results & RAM info
+    results = load_results(results_path) if results_path.is_file() else []
+    ram_info = get_host_ram_info()
+
+    successful_results = [r for r in results if r.status == "success"]
+    failed_results = [r for r in results if r.status == "failed"]
+    oom_occurred = any(r.retried_oom or (r.error and "oom" in r.error.lower()) for r in results)
+
+    # 6. Exclude first item (warmup / kernel compilation) to report steady-state seconds per item per GPU
+    if len(successful_results) > 1:
+        steady_results = successful_results[1:]
+    else:
+        steady_results = successful_results
+
+    if steady_results:
+        steady_times = [r.execution_time_seconds for r in steady_results if r.execution_time_seconds and r.execution_time_seconds > 0]
+        steady_sec_per_item = statistics.median(steady_times) if steady_times else 0.0
+    else:
+        steady_sec_per_item = 0.0
+
+    effective_it_per_sec = (len(successful_results) / wall_time) if wall_time > 0 else 0.0
+
+    stats = {
+        "mode_name": mode_name,
+        "parallel_mode": parallel_mode,
+        "offload": offload or "auto",
+        "total_time_seconds": round(wall_time, 2),
+        "items_per_second": round(effective_it_per_sec, 3),
+        "effective_items_per_second": round(effective_it_per_sec, 3),
+        "steady_state_seconds_per_item_per_gpu": round(steady_sec_per_item, 2),
+        "successful_items": len(successful_results),
+        "failed_items": len(failed_results),
+        "peak_host_ram_used_gb": ram_info.used_ram_gb,
+        "available_host_ram_gb": ram_info.available_ram_gb,
+        "oom_occurred": oom_occurred,
+        "returncode": proc.returncode,
+    }
+
+    logger.info(
+        "[%s] Finished in %.2fs (%.3f it/s) | Steady: %.2fs/item/gpu | RAM: %.2f GB used (%.2f GB avail) | OOM: %s | Success: %d/%d",
+        mode_name,
+        wall_time,
+        effective_it_per_sec,
+        steady_sec_per_item,
+        ram_info.used_ram_gb,
+        ram_info.available_ram_gb,
+        oom_occurred,
+        len(successful_results),
+        len(pack.items),
+    )
+    return stats
+
+
 def run_throughput_benchmark(
     engine_id: str,
     output_dir: Optional[Path] = None,
@@ -108,7 +269,7 @@ def run_throughput_benchmark(
     allow_test: bool = False,
     allow_noncommercial: bool = False,
 ) -> Dict[str, Any]:
-    """Execute 20-item benchmark in mode (a) and mode (b), logging time, RAM, and OOM."""
+    """Execute 20-item benchmark across Mode A, Mode B, and Mode C, logging time, RAM, and steady-state latency."""
     base_out = output_dir or (_REPO_ROOT / "outputs" / "throughput" / engine_id)
     base_out.mkdir(parents=True, exist_ok=True)
 
@@ -117,6 +278,9 @@ def run_throughput_benchmark(
 
     logger.info("=== Throughput Benchmark for Engine: %s on GPUs %s ===", engine_id, target_gpus)
 
+    # 1. Warm weights cache before benchmark timing
+    warm_weights_cache(engine_id, allow_test=allow_test, allow_noncommercial=allow_noncommercial)
+
     report: Dict[str, Any] = {
         "engine_id": engine_id,
         "item_count": 20,
@@ -124,111 +288,87 @@ def run_throughput_benchmark(
         "modes": {},
     }
 
-    # -------------------------------------------------------------
-    # (a) Run Mode A: single_process_multi_gpu (1 process, both GPUs)
-    # -------------------------------------------------------------
-    logger.info(">>> [MODE A: single_process_multi_gpu] Starting 20 items...")
-    clear_gpu_memory()
-    pack_a = create_20_item_pack(engine_id, base_out / "mode_single_process")
-
-    t0_a = time.time()
-    results_a = run_pack(
-        pack_a,
+    # 2. Run Mode A: single_process_multi_gpu (1 process, all GPUs visible)
+    stats_a = run_mode_subprocess(
+        engine_id=engine_id,
+        mode_name="single_process_multi_gpu",
         output_dir=base_out / "mode_single_process",
-        gpu_indices=target_gpus,
-        allow_test_engines=allow_test,
-        allow_noncommercial=allow_noncommercial,
         parallel_mode="single_process_multi_gpu",
-    )
-    time_a = time.time() - t0_a
-    ram_a = get_host_ram_info()
-
-    oom_a = any(r.retried_oom or (r.error and "oom" in r.error.lower()) for r in results_a)
-    failed_a = len([r for r in results_a if r.status == "failed"])
-    success_a = len([r for r in results_a if r.status == "success"])
-
-    report["modes"]["single_process_multi_gpu"] = {
-        "total_time_seconds": round(time_a, 2),
-        "items_per_second": round(len(results_a) / time_a, 3) if time_a > 0 else 0.0,
-        "successful_items": success_a,
-        "failed_items": failed_a,
-        "peak_host_ram_used_gb": ram_a.used_ram_gb,
-        "available_host_ram_gb": ram_a.available_ram_gb,
-        "oom_occurred": oom_a,
-    }
-    logger.info(
-        "Mode A Done: %.2fs (%.3f it/s) | RAM Used: %.2f GB | OOM: %s",
-        time_a,
-        len(results_a) / time_a if time_a > 0 else 0,
-        ram_a.used_ram_gb,
-        oom_a,
-    )
-
-    # -------------------------------------------------------------
-    # (b) Run Mode B: process_per_gpu (2 processes, 1 per GPU)
-    # -------------------------------------------------------------
-    logger.info(">>> [MODE B: process_per_gpu] Starting 20 items partitioned across GPUs...")
-    clear_gpu_memory()
-    pack_b = create_20_item_pack(engine_id, base_out / "mode_process_per_gpu")
-
-    t0_b = time.time()
-    results_b = run_pack(
-        pack_b,
-        output_dir=base_out / "mode_process_per_gpu",
-        gpu_indices=target_gpus,
-        allow_test_engines=allow_test,
+        offload="auto",
+        gpus=target_gpus,
+        allow_test=allow_test,
         allow_noncommercial=allow_noncommercial,
+    )
+    report["modes"]["single_process_multi_gpu"] = stats_a
+
+    # 3. Run Mode B: process_per_gpu (2 processes, 1 per GPU, offload=auto)
+    stats_b = run_mode_subprocess(
+        engine_id=engine_id,
+        mode_name="process_per_gpu",
+        output_dir=base_out / "mode_process_per_gpu",
         parallel_mode="process_per_gpu",
+        offload="auto",
+        gpus=target_gpus,
+        allow_test=allow_test,
+        allow_noncommercial=allow_noncommercial,
     )
-    time_b = time.time() - t0_b
-    ram_b = get_host_ram_info()
+    report["modes"]["process_per_gpu"] = stats_b
 
-    oom_b = any(r.retried_oom or (r.error and "oom" in r.error.lower()) for r in results_b)
-    failed_b = len([r for r in results_b if r.status == "failed"])
-    success_b = len([r for r in results_b if r.status == "success"])
+    # 4. Run Mode C: process_per_gpu + offload none (Mode C: resident on GPU, no CPU offload)
+    stats_c = run_mode_subprocess(
+        engine_id=engine_id,
+        mode_name="process_per_gpu_no_offload",
+        output_dir=base_out / "mode_process_per_gpu_no_offload",
+        parallel_mode="process_per_gpu",
+        offload="none",
+        gpus=target_gpus,
+        allow_test=allow_test,
+        allow_noncommercial=allow_noncommercial,
+    )
+    report["modes"]["process_per_gpu_no_offload"] = stats_c
 
-    report["modes"]["process_per_gpu"] = {
-        "total_time_seconds": round(time_b, 2),
-        "items_per_second": round(len(results_b) / time_b, 3) if time_b > 0 else 0.0,
-        "successful_items": success_b,
-        "failed_items": failed_b,
-        "peak_host_ram_used_gb": ram_b.used_ram_gb,
-        "available_host_ram_gb": ram_b.available_ram_gb,
-        "oom_occurred": oom_b,
-    }
-    logger.info(
-        "Mode B Done: %.2fs (%.3f it/s) | RAM Used: %.2f GB | OOM: %s",
-        time_b,
-        len(results_b) / time_b if time_b > 0 else 0,
-        ram_b.used_ram_gb,
-        oom_b,
+    # 5. Strict Governance Gate: Fail loudly if ANY mode had 0 successful items
+    for mode_key, m_stats in report["modes"].items():
+        if m_stats.get("successful_items", 0) == 0:
+            raise RuntimeError(
+                f"\n[BENCHMARK FAILED LOUDLY]\n"
+                f"Engine '{engine_id}' in mode '{mode_key}' had 0 successful items! "
+                f"(exit code: {m_stats.get('returncode')}). "
+                f"Refusing to write parallel_mode to worker/models.yaml."
+            )
+
+    # 6. Decision: Filter out OOM modes and select fastest
+    valid_modes = [
+        (k, v) for k, v in report["modes"].items()
+        if not v.get("oom_occurred") and v.get("successful_items", 0) > 0
+    ]
+
+    if not valid_modes:
+        raise RuntimeError(f"All benchmark modes for engine '{engine_id}' suffered OOM or failures!")
+
+    # Sort by total_time_seconds ascending
+    valid_modes.sort(key=lambda item: item[1]["total_time_seconds"])
+    fastest_mode_key, fastest_stats = valid_modes[0]
+
+    chosen_parallel_mode = fastest_stats["parallel_mode"]
+    chosen_offload = fastest_stats["offload"]
+    reason = (
+        f"Selected '{fastest_mode_key}' as fastest OOM-free mode: "
+        f"{fastest_stats['total_time_seconds']:.2f}s total ({fastest_stats['effective_items_per_second']:.3f} it/s, "
+        f"steady: {fastest_stats['steady_state_seconds_per_item_per_gpu']:.2f}s/item/gpu). "
+        f"Available Host RAM: {fastest_stats['available_host_ram_gb']:.2f} GB."
     )
 
-    # -------------------------------------------------------------
-    # Decision: Choose faster mode without OOM
-    # -------------------------------------------------------------
-    if oom_b and not oom_a:
-        chosen_mode = "single_process_multi_gpu"
-        reason = "Mode B suffered OOM; selected Mode A for stability."
-    elif oom_a and not oom_b:
-        chosen_mode = "process_per_gpu"
-        reason = "Mode A suffered OOM; selected Mode B for stability."
-    elif time_b < time_a:
-        speedup = ((time_a - time_b) / time_a) * 100.0 if time_a > 0 else 0.0
-        chosen_mode = "process_per_gpu"
-        reason = f"Mode B is {speedup:.1f}% faster ({time_b:.2f}s vs {time_a:.2f}s)."
-    else:
-        speedup = ((time_b - time_a) / time_b) * 100.0 if time_b > 0 else 0.0
-        chosen_mode = "single_process_multi_gpu"
-        reason = f"Mode A is {speedup:.1f}% faster ({time_a:.2f}s vs {time_b:.2f}s)."
-
-    report["faster_mode"] = chosen_mode
+    report["faster_mode"] = chosen_parallel_mode
+    report["faster_offload"] = chosen_offload
+    report["winning_mode_key"] = fastest_mode_key
     report["selection_reason"] = reason
 
-    logger.info("=== RESULT for %s: Selected parallel_mode = '%s' (%s) ===", engine_id, chosen_mode, reason)
+    logger.info("=== RESULT for %s: Selected parallel_mode = '%s', offload = '%s' (%s) ===",
+                engine_id, chosen_parallel_mode, chosen_offload, reason)
 
     # Update models.yaml
-    update_models_yaml_parallel_mode(engine_id, chosen_mode)
+    update_models_yaml_parallel_mode(engine_id, chosen_parallel_mode, chosen_offload=chosen_offload)
 
     # Save benchmark metrics JSON
     metrics_file = base_out / "throughput_benchmark.json"

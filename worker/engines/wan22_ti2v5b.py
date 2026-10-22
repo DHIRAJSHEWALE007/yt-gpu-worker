@@ -74,7 +74,7 @@ class Wan22TI2V5BEngine(Engine):
         output_dir.mkdir(parents=True, exist_ok=True)
         target_file = output_dir / f"{item.id}.mp4"
 
-        w = ((item.width // 16) * 16) if item.width else 832
+        w = ((item.width // 16) * 16) if item.width else 848
         h = ((item.height // 16) * 16) if item.height else 480
 
         frames_count = 17

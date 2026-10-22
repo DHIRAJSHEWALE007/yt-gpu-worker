@@ -27,6 +27,7 @@ models:
     notes: Requires native bf16 (compute capability >= 8.0). Produces NaN in fp16
       on Turing (T4) or Pascal (P100). Disabled by default on T4.
     description: High-efficiency 9-step distilled DiT text-to-image foundation model.
+    offload: auto
   sdxl_lightning:
     name: SDXL Lightning (4-step)
     role: volume_image
@@ -49,11 +50,12 @@ models:
     default_steps: 4
     default_guidance_scale: 0.0
     seconds_per_item: 8.7
-    load_seconds: 105.0
+    load_seconds: 38.0
     peak_vram_gb: 7.8
     gated: false
     enabled: true
-    notes: fixed UNet loading; fp16; ~8.7 s at 1024
+    notes: ByteDance SDXL-Lightning 4-step UNet in fp16; steady ~8.7 s/item per GPU
+      at 1024x1024; warm cache load ~38s.
     description: Fast 4-step distilled UNet based on SDXL for photorealistic images
       on 8GB-16GB GPUs.
     seconds_per_resolution:
@@ -63,6 +65,7 @@ models:
     parallel_mode: process_per_gpu
     vae_fix_revision: 207b116dae70ace3637169f1ddd2434b91b3a8cd
     vae_fix_license: MIT
+    offload: auto
   sdxl_turbo:
     name: SDXL-Turbo (Stability AI)
     role: test_only_noncommercial
@@ -90,6 +93,7 @@ models:
       Refused unless --allow-noncommercial.
     description: Single-step real-time distilled diffusion model for non-commercial
       evaluation.
+    offload: auto
   flux2_klein:
     name: FLUX.2 Klein 4B
     role: default_image
@@ -109,12 +113,13 @@ models:
     default_steps: 4
     default_guidance_scale: 0.0
     seconds_per_item: 15.8
-    load_seconds: 156.0
+    load_seconds: 52.0
     peak_vram_gb: null
     gated: false
     enabled: true
-    notes: Hero image engine using FLUX.2 Klein 4B Apache-2.0 variant (3.88B params).
-      High prompt adherence without gated license.
+    notes: Hero image engine using FLUX.2 Klein 4B Apache-2.0 variant. Runs 4-bit
+      NF4 quantized transformer and text encoder via BitsAndBytes. High prompt adherence
+      without gated license.
     description: Quantized 4-step rectified flow transformer (4B Apache variant) for
       hero stills.
     seconds_per_resolution:
@@ -122,6 +127,7 @@ models:
       1024x1024: 15.8
       832x1216: 16.1
     parallel_mode: single_process_multi_gpu
+    offload: auto
   wan21_t2v_1_3b:
     name: Wan 2.1 1.3B Text-to-Video
     role: hero_clip
@@ -144,9 +150,15 @@ models:
     load_seconds: 261.0
     peak_vram_gb: 13.0
     gated: false
-    enabled: true
-    notes: Hero video engine for dynamic 480p motion clips using Wan 2.1 1.3B Diffusers.
+    enabled: false
+    notes: 'Warning: One 33-frame clip takes about 6 to 22 minutes on T4. Enabled:
+      false in default packs. Native 848x480 resolution. Hero video engine for dynamic
+      motion clips using Wan 2.1 1.3B Diffusers.'
     description: High quality 480p text-to-video diffusion pipeline for hero b-roll.
+    offload: auto
+    default_width: 848
+    default_height: 480
+    max_clips_per_run: 2
   wan22_ti2v5b:
     name: Wan 2.2 5B Text/Image-to-Video
     role: hero_clip
@@ -171,6 +183,8 @@ models:
     enabled: false
     notes: Placeholder for upcoming 5B model. Disabled until released and benchmarked.
     description: Future high-capacity 5B text-to-video diffusion pipeline.
+    offload: auto
+    max_clips_per_run: 2
   fake:
     name: CPU Mock Engine
     role: test
@@ -197,6 +211,7 @@ models:
       or --test.
     description: Mock CPU engine for unit tests and local development.
     parallel_mode: process_per_gpu
+    offload: auto
 tiers:
   hero_scenes: flux2_klein
   text_scenes: flux2_klein

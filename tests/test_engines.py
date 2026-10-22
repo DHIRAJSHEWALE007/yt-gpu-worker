@@ -199,15 +199,21 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert f["commercial_ok"] is True
     assert f["gated"] is False
     assert f["seconds_per_item"] == 15.8
-    assert f["load_seconds"] == 156.0
+    assert f["load_seconds"] == 52.0
     assert f["peak_vram_gb"] is None
     assert f["parallel_mode"] == "single_process_multi_gpu"
+    assert f["offload"] == "auto"
+    assert "NF4" in f["notes"]
 
     # 3. Wan 2.1 1.3B checks
     w = models["wan21_t2v_1_3b"]
     assert w["role"] == "hero_clip"
     assert w["hero_only"] is True
     assert w["test_only"] is False
+    assert w["enabled"] is False
+    assert w["max_clips_per_run"] == 2
+    assert w["default_width"] == 848
+    assert w["default_height"] == 480
     assert w["repo_id"] == "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     assert w["revision"] == "0fad780a534b6463e45facd96134c9f345acfa5b"
     assert w["license"] == "Apache-2.0"
@@ -220,6 +226,7 @@ def test_models_yaml_single_source_of_truth() -> None:
     w5 = models["wan22_ti2v5b"]
     assert w5["enabled"] is False
     assert w5["min_vram_gb"] == 20.0
+    assert w5["max_clips_per_run"] == 2
 
     # 4. sdxl_lightning checks (enabled volume_image)
     s = models["sdxl_lightning"]
@@ -227,8 +234,9 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert s["enabled"] is True
     assert s["ram_estimate_gb"] == 12.0
     assert s["seconds_per_item"] == 8.7
-    assert s["load_seconds"] == 105.0
-    assert "8.7 s at 1024" in s["notes"]
+    assert s["load_seconds"] == 38.0
+    assert "8.7 s" in s["notes"]
+    assert s["offload"] == "auto"
     assert s["parallel_mode"] == "process_per_gpu"
     assert s["repo_id"] == "ByteDance/SDXL-Lightning"
     assert s["revision"] == "c9a24f48e1c025556787b0c58dd67a091ece2e44"
