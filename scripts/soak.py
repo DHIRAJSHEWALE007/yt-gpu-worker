@@ -84,8 +84,10 @@ def sample_process_and_gpu_memory(gpu_id: int) -> Dict[str, float]:
     try:
         import torch
         if torch.cuda.is_available():
-            vram_alloc_mb = round(torch.cuda.memory_allocated(gpu_id) / (1024.0 * 1024.0), 2)
-            vram_res_mb = round(torch.cuda.memory_reserved(gpu_id) / (1024.0 * 1024.0), 2)
+            # When CUDA_VISIBLE_DEVICES isolates this process to a single GPU, PyTorch device index is 0
+            dev_idx = 0 if os.environ.get("CUDA_VISIBLE_DEVICES") is not None else gpu_id
+            vram_alloc_mb = round(torch.cuda.memory_allocated(dev_idx) / (1024.0 * 1024.0), 2)
+            vram_res_mb = round(torch.cuda.memory_reserved(dev_idx) / (1024.0 * 1024.0), 2)
     except Exception:
         pass
 
@@ -191,7 +193,8 @@ def run_worker_process(
                 gpu_id, engine_id, len(pack.items))
 
     # Initialize engine
-    target_dev = f"cuda:{gpu_id}"
+    # When CUDA_VISIBLE_DEVICES isolates this process, active PyTorch device is cuda:0
+    target_dev = "cuda:0" if os.environ.get("CUDA_VISIBLE_DEVICES") is not None else f"cuda:{gpu_id}"
     try:
         import torch
         if not torch.cuda.is_available() and allow_test:
