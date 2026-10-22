@@ -484,7 +484,11 @@ def run_pack(
 
     effective_parallel_mode = parallel_mode or engine_cfg.get("parallel_mode")
     if not effective_parallel_mode:
-        effective_parallel_mode = "single_process_multi_gpu" if primary_engine in ("flux2_klein", "wan21_t2v_1_3b", "wan22_ti2v5b") else "process_per_gpu"
+        logger.warning(
+            "No parallel_mode configured in models.yaml for engine '%s'; defaulting to 'process_per_gpu'.",
+            primary_engine,
+        )
+        effective_parallel_mode = "process_per_gpu"
 
     target_out = output_dir or Path(pack.output_dir)
     target_out.mkdir(parents=True, exist_ok=True)

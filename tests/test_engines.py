@@ -200,7 +200,7 @@ def test_models_yaml_single_source_of_truth() -> None:
     assert f["gated"] is False
     assert f["seconds_per_item"] == 15.8
     assert f["load_seconds"] == 52.0
-    assert f["peak_vram_gb"] is None
+    assert f["peak_vram_gb"] == 6.7
     assert f["parallel_mode"] == "process_per_gpu"
     assert f["offload"] == "none"
     assert f["resident_vram_gb"] == 10.0
