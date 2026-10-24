@@ -184,6 +184,54 @@ def resolve_pack_path(user_input: str | None) -> Path:
     return find_default_pack_file()
 
 
+
+def check_working_dir_allowlist(working_dir: Path = Path("/kaggle/working")) -> None:
+    """Audit /kaggle/working ensuring only outputs/, results.json, and one small log exist."""
+    if not working_dir.is_dir():
+        return
+
+    print("=" * 80)
+    print("Audit of /kaggle/working:")
+    total_bytes = 0
+    image_bytes = 0
+    unexpected_files = []
+
+    allowed_exts = {".png", ".webp", ".jpg", ".jpeg", ".mp4"}
+    platform_ignores = {"__notebook__.ipynb", "__script__.py", "__results__.html", "__output__.png"}
+
+    for p in working_dir.rglob("*"):
+        if p.is_file():
+            sz = p.stat().st_size
+            total_bytes += sz
+            rel = p.relative_to(working_dir).as_posix()
+            
+            # Check if image
+            if p.suffix.lower() in allowed_exts:
+                image_bytes += sz
+
+            # Check allowlist
+            is_allowed = (
+                rel.startswith("outputs/")
+                or rel == "results.json"
+                or rel.endswith(".log")
+                or p.name in platform_ignores
+            )
+            print(f"  - {rel} ({sz / 1024:.1f} KB)")
+            if not is_allowed:
+                unexpected_files.append((rel, sz))
+
+    max_allowed_bytes = image_bytes + 5 * 1024 * 1024
+    print(f"Total working dir size: {total_bytes / (1024 * 1024):.2f} MB (image bytes: {image_bytes / (1024 * 1024):.2f} MB)")
+
+    if unexpected_files:
+        print("WARNING: Detected unexpected files outside allowed set in /kaggle/working:")
+        for uf, usz in unexpected_files:
+            print(f"  [UNEXPECTED] {uf} ({usz / 1024:.1f} KB)")
+
+    if total_bytes > max_allowed_bytes:
+        print(f"WARNING: Total size ({total_bytes / (1024*1024):.2f} MB) exceeds allowed limit ({max_allowed_bytes / (1024*1024):.2f} MB)!")
+    print("=" * 80)
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kaggle Runner for yt-gpu-worker")
     parser.add_argument(
@@ -213,9 +261,11 @@ def main() -> None:
         repo_dir = current_dir
         logger.info("Using local worker repository at %s", repo_dir)
     else:
-        target_dir = Path(args.repo_dir) if args.repo_dir else (
-            Path("/kaggle/working/yt-gpu-worker") if Path("/kaggle/working").is_dir() else current_dir / "yt-gpu-worker"
-        )
+        default_worker_dir = Path(os.environ.get("WORKER_DIR", "/tmp/yt-gpu-worker"))
+        target_dir = Path(args.repo_dir) if args.repo_dir else default_worker_dir
+        if str(target_dir).startswith("/kaggle/working"):
+            logger.warning("Repo dir inside /kaggle/working is forbidden; redirecting to /tmp/yt-gpu-worker")
+            target_dir = Path("/tmp/yt-gpu-worker")
         repo_dir = setup_repository(target_dir, tag=tag, install_reqs=True)
 
     if str(repo_dir) not in sys.path:
@@ -246,6 +296,7 @@ def main() -> None:
     logger.info("Starting PackRunner on %d items...", len(pack.items))
     results = run_pack(pack, output_dir=out_dir)
     logger.info("Completed %d items. Exiting cleanly.", len(results))
+    check_working_dir_allowlist()
 
 
 if __name__ == "__main__":

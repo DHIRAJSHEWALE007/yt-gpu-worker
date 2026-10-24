@@ -44,6 +44,7 @@ class Item(BaseModel):
     fps: Optional[int] = Field(default=24, ge=1, le=60, description="Video frame rate")
     ref_image_path: Optional[str] = Field(default=None, description="Reference image or first frame path")
     extra_params: Dict[str, Any] = Field(default_factory=dict, description="Custom engine parameters")
+    output_format: Optional[Literal["png", "webp"]] = Field(default=None, description="Output image format override")
 
 
 class Result(BaseModel):
@@ -77,6 +78,7 @@ class Pack(BaseModel):
     created_at: str = Field(default_factory=_now_iso, description="UTC creation timestamp")
     max_runtime_minutes: Optional[float] = Field(default=None, description="Hard deadline for execution")
     output_dir: str = Field(default="outputs", description="Output directory relative to pack location")
+    output_format: Literal["png", "webp"] = Field(default="png", description="Output image format: png or webp")
     items: List[Item] = Field(default_factory=list, description="Ordered list of items to render")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Arbitrary pipeline context")
 

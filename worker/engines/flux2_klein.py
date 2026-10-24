@@ -204,7 +204,9 @@ class Flux2KleinEngine(Engine):
                 generator = torch.Generator(device="cpu").manual_seed(item.seed)
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        target_file = output_dir / f"{item.id}.png"
+        fmt = (getattr(item, "output_format", None) or (item.extra_params.get("output_format") if hasattr(item, "extra_params") else None) or "png").lower()
+        ext = "webp" if fmt == "webp" else "png"
+        target_file = output_dir / f"{item.id}.{ext}"
 
         w = ((item.width // 16) * 16) if item.width else 1024
         h = ((item.height // 16) * 16) if item.height else 1024
@@ -223,7 +225,10 @@ class Flux2KleinEngine(Engine):
             result = self.pipe(**kwargs)
 
         image = result.images[0]
-        image.save(target_file, format="PNG")
+        if fmt == "webp":
+            image.save(target_file, format="WEBP", quality=95)
+        else:
+            image.save(target_file, format="PNG")
         return target_file
 
     def unload(self) -> None:

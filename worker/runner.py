@@ -363,13 +363,25 @@ class PackRunner:
                     self.video_clips_rendered += 1
 
                 # 2. Check if output already exists (Idempotency / Resumability)
-                expected_ext = "mp4" if item.media_type == "video" else "png"
+                if getattr(self.pack, "output_format", None) and not getattr(item, "output_format", None):
+                    item.output_format = self.pack.output_format
+
+                if item.media_type == "video":
+                    expected_ext = "mp4"
+                    alt_exts = []
+                else:
+                    expected_ext = (getattr(item, "output_format", None) or getattr(self.pack, "output_format", "png") or "png").lower()
+                    alt_exts = ["png", "webp", "jpg", "jpeg"]
+                    if expected_ext in alt_exts:
+                        alt_exts.remove(expected_ext)
+
                 expected_file = self.output_dir / f"{item.id}.{expected_ext}"
                 if not (expected_file.is_file() and expected_file.stat().st_size > 0):
-                    alt_ext = "png" if expected_ext == "mp4" else "mp4"
-                    alt_file = self.output_dir / f"{item.id}.{alt_ext}"
-                    if alt_file.is_file() and alt_file.stat().st_size > 0:
-                        expected_file = alt_file
+                    for alt in alt_exts:
+                        alt_file = self.output_dir / f"{item.id}.{alt}"
+                        if alt_file.is_file() and alt_file.stat().st_size > 0:
+                            expected_file = alt_file
+                            break
 
                 if self.allow_resume and expected_file.is_file() and expected_file.stat().st_size > 0:
                     logger.info("[RESUME] Skipping item %s — output already exists: %s", item.id, expected_file.name)

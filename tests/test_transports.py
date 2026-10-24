@@ -203,9 +203,16 @@ def test_requirements_gpu_pins() -> None:
     assert pins["pydantic"] == "2.13.5"
     assert pins["PyYAML"] == "6.0.3"
     assert pins["safetensors"] == "0.8.0"
-    assert pins["torch"] == "2.11.0+cu128"
-    assert pins["torchvision"] == "0.26.0+cu128"
     assert pins["transformers"] == "5.16.1"
+    assert "torch" not in pins, "torch pin must be removed from requirements-gpu.txt"
+    assert "torchvision" not in pins, "torchvision pin must be removed from requirements-gpu.txt"
+
+    # Verify full freeze reference exists in requirements-tested-env.txt
+    freeze_file = repo_root / "requirements-tested-env.txt"
+    assert freeze_file.is_file(), "requirements-tested-env.txt must exist"
+    freeze_text = freeze_file.read_text(encoding="utf-8")
+    assert "torch==" in freeze_text
+    assert "torchvision==" in freeze_text
 
 
 def test_runner_parallel_mode_yaml_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
