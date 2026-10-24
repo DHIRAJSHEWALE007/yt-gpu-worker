@@ -1,0 +1,21 @@
+# http_worker settings. Safe defaults: local only, no tunnel, manual start/stop.
+host: 127.0.0.1
+port: 8000
+roles:                      # one engine process per entry; gpu is the physical GPU index
+  - {gpu: 0, engine: flux2_klein}
+  - {gpu: 1, engine: sdxl_lightning}
+default_engine: flux2_klein
+output_format: webp         # webp | jpeg | png  (smaller files = less tunnel bandwidth)
+image_quality: 92
+output_dir: /tmp/http_worker_out   # never /kaggle/working (it would be bundled as kernel output)
+max_session_minutes: 360    # hard cap so a forgotten session cannot burn your weekly GPU quota; 0 = off
+idle_timeout_minutes: 0     # 0 = stay up until you stop it; set e.g. 20 for a dead-man switch
+heartbeat_seconds: 60
+request_timeout_s: 300
+max_queue: 200
+max_side: 2048
+job_ttl_minutes: 120
+allow_test_engines: false
+allow_noncommercial: false
+tunnel: none                # none | ngrok | cloudflared   (opt-in; see README)
+selftest_on_start: true

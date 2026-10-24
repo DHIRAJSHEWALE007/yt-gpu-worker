@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pyyaml
+pillow
+pydantic
+httpx2
+# optional, only if tunnel: ngrok
+# pyngrok
